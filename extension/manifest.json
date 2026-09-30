@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "MagiBot Browser Control",
+  "version": "1.0",
+  "description": "MCP Server extension for browser control",
+  "permissions": ["debugger", "tabs", "activeTab", "scripting", "storage", "alarms"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup/popup.html"
+  },
+  "icons": {}
+}

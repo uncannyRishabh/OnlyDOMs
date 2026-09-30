@@ -1,0 +1,4 @@
+/mcp-server/target/
+**/*.rs.bk
+.DS_Store
+*.log

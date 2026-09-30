@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>MagiBot Control</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="warning">
+    <strong>⚠️ USER DISCRETIONARY WARNING:</strong><br/>
+    This agent possesses capabilities to actively inspect, navigate, execute arbitrary JavaScript, manipulate the DOM, and control your active browser session.
+  </div>
+  <div>
+    <label>Port: <input type="number" id="portInput" value="9222" /></label>
+    <button id="savePortBtn">Save</button>
+  </div>
+  <div>
+    Status: <span id="wsStatus">🟡 Checking...</span>
+  </div>
+  <div>
+    <button id="toggleBtn">Attach Session</button>
+  </div>
+  <div id="status"></div>
+  <script src="popup.js"></script>
+</body>
+</html>

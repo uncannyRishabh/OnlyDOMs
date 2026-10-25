@@ -96,7 +96,7 @@ pub async fn fill_inputs(state: SharedHub, params: Value) -> Result<Value, Strin
     }
 
     let fields_json = serde_json::to_string(&fields).unwrap_or("[]".to_string());
-    let expr = format!("window.magibotInput && window.magibotInput.fill({});", fields_json);
+    let expr = format!("window.chromapilotInput && window.chromapilotInput.fill({});", fields_json);
     
     let res = send_cdp_command(state.clone(), "Runtime.evaluate", serde_json::json!({
         "expression": expr,

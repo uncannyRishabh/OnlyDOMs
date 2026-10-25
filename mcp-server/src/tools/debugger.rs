@@ -4,11 +4,28 @@ use serde_json::Value;
 pub async fn evaluate_expression(state: SharedHub, params: Value) -> Result<Value, String> {
     let expression = params.get("expression").and_then(|v| v.as_str()).unwrap_or("");
     let return_by_value = params.get("return_by_value").and_then(|v| v.as_bool()).unwrap_or(true);
+    let await_promise = params.get("await_promise").and_then(|v| v.as_bool()).unwrap_or(true);
 
     let res = send_cdp_command(state.clone(), "Runtime.evaluate", serde_json::json!({
         "expression": expression,
-        "returnByValue": return_by_value
+        "returnByValue": return_by_value,
+        "awaitPromise": await_promise
     })).await?;
+
+    // Safety guardrail: truncate massive string outputs (>8,000 chars) to prevent prompt token blowups
+    if let Some(val_str) = res.get("result").and_then(|r| r.get("value")).and_then(|v| v.as_str()) {
+        if val_str.len() > 8000 {
+            let truncated = format!("{}... [TRUNCATED: Output exceeded 8,000 characters to prevent prompt bloat]", &val_str[..8000]);
+            return Ok(serde_json::json!({
+                "result": {
+                    "type": "string",
+                    "value": truncated,
+                    "truncated": true,
+                    "original_length": val_str.len()
+                }
+            }));
+        }
+    }
 
     Ok(res)
 }

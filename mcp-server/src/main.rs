@@ -1,3 +1,5 @@
+#![recursion_limit = "512"]
+
 mod mcp_protocol;
 mod websocket_hub;
 mod tools;
@@ -23,15 +25,15 @@ async fn main() {
         .init();
     let args = Args::parse();
     
-    info!("MagiBot MCP Server starting...");
+    info!("ChromaPilot MCP Server starting...");
 
     let state = Arc::new(Mutex::new(websocket_hub::HubState::new()));
     let state_for_hub = state.clone();
 
     // Start WebSocket Hub in background
-    let addr = format!("127.0.0.1:{}", args.port);
+    let _addr = format!("127.0.0.1:{}", args.port);
     tokio::spawn(async move {
-        websocket_hub::start_hub(&addr, state_for_hub).await;
+        websocket_hub::start_hub(args.port, state_for_hub).await;
     });
 
     let stdin = io::stdin();
@@ -53,7 +55,7 @@ async fn main() {
                                 "tools": {}
                             },
                             "serverInfo": {
-                                "name": "MagiBot",
+                                "name": "ChromaPilot",
                                 "version": "1.0.0"
                             },
                             "instructions": "⚠️ USER DISCRETIONARY WARNING: This agent possesses capabilities to actively inspect, navigate, execute arbitrary JavaScript, manipulate the DOM, and control your active browser session. It can view sensitive information on open pages. Use strictly in trusted environments and operate responsibly."
@@ -67,43 +69,179 @@ async fn main() {
                             "tools": [
                                 {
                                     "name": "list_browser_sessions",
-                                    "description": "List connected browser sessions",
-                                    "inputSchema": { "type": "object", "properties": {} }
+                                    "description": "List open browser tabs across Chrome windows in a compact, token-efficient format",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "detailed": { "type": "boolean", "description": "Whether to return full Chromium tab properties (default false)" }
+                                        }
+                                    }
+                                },
+                                {
+                                    "name": "create_tab",
+                                    "description": "Open a new browser tab with optional URL and immediately attach to it",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "url": { "type": "string", "description": "URL to open in the new tab" }
+                                        }
+                                    }
+                                },
+                                {
+                                    "name": "switch_tab",
+                                    "description": "Switch active tab in Chrome",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "tab_id": { "type": "number", "description": "Numeric ID of the tab" }
+                                        },
+                                        "required": ["tab_id"]
+                                    }
+                                },
+                                {
+                                    "name": "close_tab",
+                                    "description": "Close a specific browser tab",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "tab_id": { "type": "number", "description": "Numeric ID of the tab to close" }
+                                        },
+                                        "required": ["tab_id"]
+                                    }
                                 },
                                 {
                                     "name": "select_session",
-                                    "description": "Select a browser session to control",
-                                    "inputSchema": { "type": "object", "properties": { "session_id": { "type": "string" } } }
+                                    "description": "Select or switch debugger focus to a specific tab by ID",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "session_id": { "type": "string", "description": "Numeric Chrome tab ID" }
+                                        },
+                                        "required": ["session_id"]
+                                    }
                                 },
                                 {
                                     "name": "capture_viewport",
-                                    "description": "Capture a screenshot of the viewport with an overlay grid",
-                                    "inputSchema": { "type": "object", "properties": { "cols": { "type": "number" } } }
+                                    "description": "Capture a screenshot of the viewport with an adaptive 16xN overlay grid",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "cols": { "type": "number", "description": "Number of columns (default: 16)" }
+                                        }
+                                    }
                                 },
                                 {
                                     "name": "execute_browser_pipeline",
-                                    "description": "Execute a series of browser steps",
-                                    "inputSchema": { "type": "object", "properties": { "steps": { "type": "array" } } }
+                                    "description": "Execute a batch sequence of resilient browser actions with built-in await, polling, and retry logic",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "steps": {
+                                                "type": "array",
+                                                "description": "Ordered actions: navigate, new_tab, switch_tab, wait_for, wait_condition, wait_network_idle, click, scroll, evaluate, fill_inputs, press_key, sleep, capture_grid_screenshot",
+                                                "items": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "action": {
+                                                            "type": "string",
+                                                            "enum": ["navigate", "new_tab", "switch_tab", "wait_for", "wait_condition", "wait_network_idle", "click", "scroll", "evaluate", "fill_inputs", "press_key", "sleep", "capture_grid_screenshot"],
+                                                            "description": "Action type"
+                                                        },
+                                                        "url": { "type": "string", "description": "URL for navigate or new_tab" },
+                                                        "tab_id": { "type": "number", "description": "Tab ID for switch_tab" },
+                                                        "selector": { "type": "string", "description": "CSS selector to wait for, click, or scroll" },
+                                                        "text": { "type": "string", "description": "Visible text to target for semantic click" },
+                                                        "aria_label": { "type": "string", "description": "Aria-label to target for semantic click" },
+                                                        "direction": { "type": "string", "enum": ["down", "up"], "description": "Direction for scroll (default: down)" },
+                                                        "delta_y": { "type": "number", "description": "Vertical scroll delta in pixels" },
+                                                        "delta_x": { "type": "number", "description": "Horizontal scroll delta in pixels" },
+                                                        "expression": { "type": "string", "description": "JS boolean expression to await (wait_condition) or expression to execute (evaluate)" },
+                                                        "timeout_ms": { "type": "number", "description": "Timeout in milliseconds" },
+                                                        "wait_after_ms": { "type": "number", "description": "Delay in ms after clicking or scrolling" },
+                                                        "duration_ms": { "type": "number", "description": "Duration for sleep action in ms" },
+                                                        "key": { "type": "string", "description": "Key name for press_key (e.g. Enter, Tab, Escape, ArrowDown)" },
+                                                        "optional": { "type": "boolean", "description": "Do not fail pipeline if this step times out" },
+                                                        "fields": {
+                                                            "type": "array",
+                                                            "description": "Fields for fill_inputs",
+                                                            "items": {
+                                                                "type": "object",
+                                                                "properties": {
+                                                                    "selector": { "type": "string" },
+                                                                    "value": { "type": "string" }
+                                                                },
+                                                                "required": ["selector", "value"]
+                                                            }
+                                                        }
+                                                    },
+                                                    "required": ["action"]
+                                                }
+                                            }
+                                        },
+                                        "required": ["steps"]
+                                    }
                                 },
                                 {
                                     "name": "click_quadrant",
-                                    "description": "Click a cell on the grid",
-                                    "inputSchema": { "type": "object", "properties": { "cell": { "type": "string" } } }
+                                    "description": "Click a cell on the 16xN grid (e.g. 'D3')",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "cell": { "type": "string", "description": "Grid cell label, e.g. 'D4' or 'G12'" },
+                                            "offset_x_ratio": { "type": "number", "description": "Sub-cell horizontal offset (-0.5 to 0.5)" },
+                                            "offset_y_ratio": { "type": "number", "description": "Sub-cell vertical offset (-0.5 to 0.5)" },
+                                            "click_count": { "type": "number", "description": "Number of clicks (1 for single, 2 for double)" }
+                                        },
+                                        "required": ["cell"]
+                                    }
                                 },
                                 {
                                     "name": "fill_inputs",
-                                    "description": "Fill inputs in the page",
-                                    "inputSchema": { "type": "object", "properties": { "fields": { "type": "array" } } }
+                                    "description": "Framework-safe batch form input filling (React, Vue, Angular)",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "fields": {
+                                                "type": "array",
+                                                "items": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "selector": { "type": "string", "description": "CSS selector for input" },
+                                                        "cell": { "type": "string", "description": "Grid cell if using coordinate mapping" },
+                                                        "value": { "type": "string", "description": "Text value to fill" }
+                                                    },
+                                                    "required": ["value"]
+                                                }
+                                            }
+                                        },
+                                        "required": ["fields"]
+                                    }
                                 },
                                 {
                                     "name": "interact",
-                                    "description": "Interact with the page using raw coordinates",
-                                    "inputSchema": { "type": "object", "properties": { "action": { "type": "string" }, "x_ratio": { "type": "number" }, "y_ratio": { "type": "number" } } }
+                                    "description": "Interact with the page using normalized coordinates (0.0 to 1.0)",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "action": { "type": "string", "enum": ["click", "hover", "scroll"], "description": "Interaction action" },
+                                            "x_ratio": { "type": "number", "description": "X coordinate normalized (0.0 to 1.0)" },
+                                            "y_ratio": { "type": "number", "description": "Y coordinate normalized (0.0 to 1.0)" },
+                                            "deltaX": { "type": "number", "description": "Horizontal scroll delta" },
+                                            "deltaY": { "type": "number", "description": "Vertical scroll delta" }
+                                        },
+                                        "required": ["action"]
+                                    }
                                 },
                                 {
                                     "name": "evaluate_expression",
-                                    "description": "Evaluate JS expression",
-                                    "inputSchema": { "type": "object", "properties": { "expression": { "type": "string" } } }
+                                    "description": "Evaluate JavaScript in the active tab context via CDP Runtime.evaluate",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "expression": { "type": "string", "description": "JavaScript expression to evaluate" }
+                                        },
+                                        "required": ["expression"]
+                                    }
                                 },
                                 {
                                     "name": "add_breakpoint",
@@ -137,14 +275,44 @@ async fn main() {
                         let name = req.params.as_ref().and_then(|p| p.get("name")).and_then(|n| n.as_str()).unwrap_or("");
                         let args = req.params.as_ref().and_then(|p| p.get("arguments")).cloned().unwrap_or(serde_json::json!({}));
                         
+                        let parse_u64 = |val: Option<&Value>| -> Option<u64> {
+                            val.and_then(|v| {
+                                if let Some(n) = v.as_u64() {
+                                    Some(n)
+                                } else if let Some(s) = v.as_str() {
+                                    s.trim().parse::<u64>().ok()
+                                } else {
+                                    v.as_f64().map(|f| f as u64)
+                                }
+                            })
+                        };
+
                         match name {
-                            "list_browser_sessions" => { tools::session::list_browser_sessions(state.clone()).await }
+                            "list_browser_sessions" => { tools::session::list_browser_sessions(state.clone(), args).await }
+                            "create_tab" => {
+                                let url = args.get("url").and_then(|u| u.as_str()).unwrap_or("about:blank");
+                                tools::session::create_tab(state.clone(), url).await
+                            }
+                            "switch_tab" => {
+                                match parse_u64(args.get("tab_id")) {
+                                    Some(id) if id > 0 => tools::session::switch_tab(state.clone(), id).await,
+                                    _ => Err("Missing or invalid tab_id.".to_string()),
+                                }
+                            }
+                            "close_tab" => {
+                                match parse_u64(args.get("tab_id")) {
+                                    Some(id) if id > 0 => tools::session::close_tab(state.clone(), id).await,
+                                    _ => Err("Missing or invalid tab_id.".to_string()),
+                                }
+                            }
                             "select_session" => {
-                                let id = args.get("session_id").and_then(|s| s.as_u64()).unwrap_or(0);
-                                tools::session::select_session(state.clone(), id).await
+                                match parse_u64(args.get("session_id")) {
+                                    Some(id) if id > 0 => tools::session::select_session(state.clone(), id).await,
+                                    _ => Err("Missing or invalid session_id. Please provide a valid tab ID.".to_string()),
+                                }
                             }
                             "capture_viewport" => {
-                                let cols = args.get("cols").and_then(|c| c.as_u64()).unwrap_or(16) as u32;
+                                let cols = parse_u64(args.get("cols")).unwrap_or(16) as u32;
                                 tools::visual::capture_viewport(state.clone(), cols).await
                             }
                             "execute_browser_pipeline" => {

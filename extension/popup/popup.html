@@ -2,24 +2,42 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>MagiBot Control</title>
+  <title>ChromaPilot Browser Control</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
+  <div class="header">
+    <strong>ChromaPilot Browser Control</strong>
+  </div>
   <div class="warning">
     <strong>⚠️ USER DISCRETIONARY WARNING:</strong><br/>
-    This agent possesses capabilities to actively inspect, navigate, execute arbitrary JavaScript, manipulate the DOM, and control your active browser session.
+    This agent actively inspects, navigates, executes JavaScript, and controls the attached tab via Chrome DevTools Protocol.
   </div>
-  <div>
-    <label>Port: <input type="number" id="portInput" value="9222" /></label>
-    <button id="savePortBtn">Save</button>
+  
+  <div class="section">
+    <label>MCP Port:
+      <div class="port-row">
+        <input type="number" id="portInput" value="9222" placeholder="9222 or 9922" />
+        <button id="savePortBtn">Set Port</button>
+      </div>
+    </label>
   </div>
-  <div>
-    Status: <span id="wsStatus">🟡 Checking...</span>
+
+  <div class="section status-row">
+    WebSocket: <span id="wsStatus">🟡 Checking...</span>
   </div>
-  <div>
+
+  <div class="section">
+    <label for="tabSelect">Target Tab:</label>
+    <select id="tabSelect">
+      <option value="">Loading tabs...</option>
+    </select>
+  </div>
+
+  <div class="section">
     <button id="toggleBtn">Attach Session</button>
   </div>
+
   <div id="status"></div>
   <script src="popup.js"></script>
 </body>

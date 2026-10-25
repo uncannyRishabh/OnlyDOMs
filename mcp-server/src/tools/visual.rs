@@ -6,7 +6,7 @@ pub async fn capture_viewport(state: SharedHub, _cols: u32) -> Result<Value, Str
     send_hub_command(state.clone(), "INJECT_SCRIPT", "", serde_json::json!("content/overlay_manager.js")).await?;
 
     // 1. evaluate script to draw grid
-    let draw_grid_expr = "window.magibotGrid && window.magibotGrid.drawGrid();";
+    let draw_grid_expr = "window.chromapilotGrid && window.chromapilotGrid.drawGrid();";
     let draw_res = send_cdp_command(state.clone(), "Runtime.evaluate", serde_json::json!({
         "expression": draw_grid_expr,
         "awaitPromise": true
@@ -30,7 +30,7 @@ pub async fn capture_viewport(state: SharedHub, _cols: u32) -> Result<Value, Str
     let data = screenshot.get("data").and_then(|d| d.as_str()).unwrap_or("");
 
     // remove grid
-    let remove_grid_expr = "window.magibotGrid && window.magibotGrid.removeGrid();";
+    let remove_grid_expr = "window.chromapilotGrid && window.chromapilotGrid.removeGrid();";
     let _ = send_cdp_command(state.clone(), "Runtime.evaluate", serde_json::json!({
         "expression": remove_grid_expr,
         "awaitPromise": true

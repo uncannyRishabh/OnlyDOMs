@@ -1,93 +1,230 @@
-function connect(port = 9222) {
-    chrome.storage.session.get(["wsUrl"], async (res) => {
-        const url = res.wsUrl || `ws://127.0.0.1:${port}/mcp-relay`;
-        
-        const ws = new WebSocket(url);
+const CANDIDATE_PORTS = [9222, 9922, 9223, 9923, 9224, 9924];
+let currentPortIndex = 0;
+let reconnectDelayMs = 2000;
+const MAX_RECONNECT_DELAY_MS = 15000;
+let currentWs = null;
+let reconnectTimer = null;
+const attachedTabs = new Set();
+
+function scheduleReconnect() {
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(() => {
+        connect();
+    }, reconnectDelayMs);
+    reconnectDelayMs = Math.min(Math.round(reconnectDelayMs * 1.5), MAX_RECONNECT_DELAY_MS);
+}
+
+async function resolveTargetTab(requestedTabId) {
+    let tabId = Number(requestedTabId);
+    if (!tabId || isNaN(tabId)) {
+        const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        if (activeTab) {
+            tabId = activeTab.id;
+        } else {
+            const tabs = await chrome.tabs.query({});
+            if (tabs.length > 0) {
+                tabId = tabs[0].id;
+            }
+        }
+    }
+    if (!tabId) {
+        throw new Error("No browser tab available");
+    }
+
+    if (!attachedTabs.has(tabId)) {
+        try {
+            await chrome.debugger.attach({ tabId }, "1.3");
+        } catch (e) {
+            const msg = e?.message || "";
+            if (!msg.includes("Already attached") && !msg.includes("Another debugger")) {
+                throw e;
+            }
+        }
+        await Promise.allSettled([
+            chrome.debugger.sendCommand({ tabId }, "Page.enable", {}),
+            chrome.debugger.sendCommand({ tabId }, "Runtime.enable", {}),
+            chrome.debugger.sendCommand({ tabId }, "DOM.enable", {}),
+            chrome.debugger.sendCommand({ tabId }, "Input.enable", {})
+        ]);
+        attachedTabs.add(tabId);
+    }
+    return tabId;
+}
+
+function connect(overridePort) {
+    if (currentWs && (currentWs.readyState === WebSocket.OPEN || currentWs.readyState === WebSocket.CONNECTING)) {
+        return;
+    }
+
+    chrome.storage.session.get(["wsUrl", "preferredPort"], async (res) => {
+        let port = overridePort || res.preferredPort;
+        if (!port) {
+            port = CANDIDATE_PORTS[currentPortIndex % CANDIDATE_PORTS.length];
+        }
+        const url = `ws://127.0.0.1:${port}/mcp-relay`;
+        console.log(`[ChromaPilot] Attempting connection to ${url}...`);
+
+        let ws;
+        try {
+            ws = new WebSocket(url);
+        } catch (e) {
+            console.warn(`[ChromaPilot] WebSocket init failed: ${e.message}`);
+            currentPortIndex++;
+            scheduleReconnect();
+            return;
+        }
+
+        currentWs = ws;
+
+        const connectTimeout = setTimeout(() => {
+            if (ws && ws.readyState !== WebSocket.OPEN) {
+                console.log(`[ChromaPilot] Connection timeout on port ${port}`);
+                try { ws.close(); } catch (_) {}
+            }
+        }, 3000);
+
         ws.onopen = () => {
-            console.log("Connected to MCP");
-            chrome.storage.session.set({ connected: true });
+            clearTimeout(connectTimeout);
+            console.log(`[ChromaPilot] Connected to MCP hub on port ${port}`);
+            chrome.storage.session.set({ connected: true, activePort: port, browserWide: true });
+            reconnectDelayMs = 2000;
         };
+
         ws.onmessage = async (event) => {
-            const data = JSON.parse(event.data);
+            let data;
+            try {
+                data = JSON.parse(event.data);
+            } catch (e) {
+                console.error("[ChromaPilot] Parse error:", e);
+                return;
+            }
+
             if (data.type === "CDP_CMD") {
-                const result = await chrome.storage.session.get("activeSession");
-                const registeredTabId = result.activeSession;
-                if (registeredTabId) {
-                    try {
-                        const res = await chrome.debugger.sendCommand(
-                            { tabId: registeredTabId },
-                            data.method,
-                            data.params
-                        );
-                        ws.send(JSON.stringify({ id: data.id, result: res }));
-                    } catch (e) {
-                        ws.send(JSON.stringify({ id: data.id, error: e.message }));
-                    }
-                } else {
-                    ws.send(JSON.stringify({ id: data.id, error: "No active session" }));
+                try {
+                    const targetTabId = await resolveTargetTab(data.tabId);
+                    const res = await chrome.debugger.sendCommand(
+                        { tabId: targetTabId },
+                        data.method,
+                        data.params
+                    );
+                    ws.send(JSON.stringify({ id: data.id, result: res }));
+                } catch (e) {
+                    ws.send(JSON.stringify({ id: data.id, error: e.message }));
                 }
             } else if (data.type === "INJECT_SCRIPT") {
-                const result = await chrome.storage.session.get("activeSession");
-                const registeredTabId = result.activeSession;
-                if (registeredTabId) {
-                    try {
-                        await chrome.scripting.executeScript({
-                            target: { tabId: registeredTabId },
-                            files: [data.file]
-                        });
-                        ws.send(JSON.stringify({ id: data.id, result: { success: true } }));
-                    } catch (e) {
-                        ws.send(JSON.stringify({ id: data.id, error: e.message }));
-                    }
-                } else {
-                    ws.send(JSON.stringify({ id: data.id, error: "No active session" }));
+                try {
+                    const targetTabId = await resolveTargetTab(data.tabId);
+                    await chrome.scripting.executeScript({
+                        target: { tabId: targetTabId },
+                        files: [data.file]
+                    });
+                    ws.send(JSON.stringify({ id: data.id, result: { success: true } }));
+                } catch (e) {
+                    ws.send(JSON.stringify({ id: data.id, error: e.message }));
                 }
             } else if (data.type === "LIST_TABS") {
                 try {
                     const tabs = await chrome.tabs.query({});
-                    ws.send(JSON.stringify({ id: data.id, result: { tabs } }));
-                } catch(e) {
+                    // Token-efficient tab list: omit bulky internal flags unless detailed is explicitly true
+                    const resultTabs = data.detailed ? tabs : tabs.map(t => ({
+                        id: t.id,
+                        title: t.title || "",
+                        url: t.url || "",
+                        active: !!t.active,
+                        windowId: t.windowId
+                    }));
+                    ws.send(JSON.stringify({ id: data.id, result: { tabs: resultTabs } }));
+                } catch (e) {
+                    ws.send(JSON.stringify({ id: data.id, error: e.message }));
+                }
+            } else if (data.type === "CREATE_TAB") {
+                try {
+                    const url = data.url || "about:blank";
+                    const newTab = await chrome.tabs.create({ url, active: true });
+                    const tabId = await resolveTargetTab(newTab.id);
+                    ws.send(JSON.stringify({ id: data.id, result: { success: true, tabId: newTab.id } }));
+                } catch (e) {
+                    ws.send(JSON.stringify({ id: data.id, error: e.message }));
+                }
+            } else if (data.type === "SWITCH_TAB") {
+                try {
+                    const tabId = Number(data.tabId);
+                    await chrome.tabs.update(tabId, { active: true });
+                    await resolveTargetTab(tabId);
+                    ws.send(JSON.stringify({ id: data.id, result: { success: true, tabId } }));
+                } catch (e) {
+                    ws.send(JSON.stringify({ id: data.id, error: e.message }));
+                }
+            } else if (data.type === "CLOSE_TAB") {
+                try {
+                    const tabId = Number(data.tabId);
+                    await chrome.tabs.remove(tabId);
+                    attachedTabs.delete(tabId);
+                    ws.send(JSON.stringify({ id: data.id, result: { success: true } }));
+                } catch (e) {
                     ws.send(JSON.stringify({ id: data.id, error: e.message }));
                 }
             } else if (data.type === "ATTACH_TAB") {
                 try {
-                    const tabId = data.tabId;
-                    await chrome.debugger.attach({ tabId }, "1.3");
+                    const tabId = await resolveTargetTab(data.tabId);
                     await chrome.storage.session.set({ activeSession: tabId });
-                    
-                    await chrome.debugger.sendCommand({tabId}, "Page.enable", {});
-                    await chrome.debugger.sendCommand({tabId}, "Runtime.enable", {});
-                    await chrome.debugger.sendCommand({tabId}, "DOM.enable", {});
-                    await chrome.debugger.sendCommand({tabId}, "Debugger.enable", {});
-                    await chrome.debugger.sendCommand({tabId}, "Input.enable", {});
-                    
-                    ws.send(JSON.stringify({ id: data.id, result: { success: true } }));
-                } catch(e) {
+                    ws.send(JSON.stringify({ id: data.id, result: { success: true, tabId } }));
+                } catch (e) {
                     ws.send(JSON.stringify({ id: data.id, error: e.message }));
                 }
+            } else if (data.type === "DETACH_TAB") {
+                try {
+                    const tabId = Number(data.tabId);
+                    if (tabId && attachedTabs.has(tabId)) {
+                        try { await chrome.debugger.detach({ tabId }); } catch (_) {}
+                        attachedTabs.delete(tabId);
+                    }
+                    ws.send(JSON.stringify({ id: data.id, result: { success: true } }));
+                } catch (e) {
+                    ws.send(JSON.stringify({ id: data.id, error: e.message }));
+                }
+            } else if (data.type === "RELOAD_EXTENSION") {
+                ws.send(JSON.stringify({ id: data.id, result: { success: true } }));
+                setTimeout(() => chrome.runtime.reload(), 100);
             }
         };
+
         ws.onclose = () => {
+            clearTimeout(connectTimeout);
+            currentWs = null;
             chrome.storage.session.set({ connected: false });
-            chrome.alarms.create("reconnect", { delayInMinutes: 0.05 });
+            if (!overridePort && !res.preferredPort) {
+                currentPortIndex++;
+            }
+            scheduleReconnect();
+        };
+
+        ws.onerror = () => {
+            try { ws.close(); } catch (_) {}
         };
     });
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-    chrome.storage.session.set({ activeSession: null, connected: false });
+    chrome.storage.session.set({ activeSession: null, connected: false, browserWide: true });
     connect();
 });
 
-chrome.alarms.onAlarm.addListener((alarm) => {
-    if (alarm.name === "reconnect") {
-        connect();
+chrome.debugger.onDetach.addListener((source, reason) => {
+    if (source.tabId) {
+        attachedTabs.delete(source.tabId);
+        chrome.storage.session.get("activeSession", (result) => {
+            if (source.tabId === result?.activeSession) {
+                chrome.storage.session.set({ activeSession: null });
+            }
+        });
     }
 });
 
-chrome.debugger.onDetach.addListener((source, reason) => {
+chrome.tabs.onRemoved.addListener((tabId) => {
+    attachedTabs.delete(tabId);
     chrome.storage.session.get("activeSession", (result) => {
-        if (source.tabId === result.activeSession) {
+        if (tabId === result?.activeSession) {
             chrome.storage.session.set({ activeSession: null });
         }
     });
@@ -95,46 +232,74 @@ chrome.debugger.onDetach.addListener((source, reason) => {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.action === "attach" && msg.tabId) {
-        chrome.debugger.attach({ tabId: msg.tabId }, "1.3", async () => {
-            if (chrome.runtime.lastError) {
-                sendResponse({ success: false, error: chrome.runtime.lastError.message });
-            } else {
-                await chrome.storage.session.set({ activeSession: msg.tabId });
-                try {
-                    await chrome.debugger.sendCommand({tabId: msg.tabId}, "Page.enable", {});
-                    await chrome.debugger.sendCommand({tabId: msg.tabId}, "Runtime.enable", {});
-                    await chrome.debugger.sendCommand({tabId: msg.tabId}, "DOM.enable", {});
-                    await chrome.debugger.sendCommand({tabId: msg.tabId}, "Debugger.enable", {});
-                    await chrome.debugger.sendCommand({tabId: msg.tabId}, "Input.enable", {});
-                    sendResponse({ success: true });
-                } catch(e) {
-                    sendResponse({ success: false, error: e.message });
-                }
+        (async () => {
+            const tabId = Number(msg.tabId);
+            if (!tabId || isNaN(tabId)) {
+                sendResponse({ success: false, error: "Invalid tab ID" });
+                return;
             }
-        });
+            try {
+                const current = await chrome.storage.session.get("activeSession");
+                if (current && current.activeSession === tabId) {
+                    sendResponse({ success: true, message: "Already attached" });
+                    return;
+                }
+                if (current && current.activeSession && current.activeSession !== tabId) {
+                    try {
+                        await chrome.debugger.detach({ tabId: current.activeSession });
+                    } catch (_) {}
+                }
+                try {
+                    await chrome.debugger.attach({ tabId }, "1.3");
+                } catch (attachErr) {
+                    const errMsg = attachErr?.message || "";
+                    if (!errMsg.includes("Already attached") && !errMsg.includes("Another debugger is already attached")) {
+                        throw attachErr;
+                    }
+                }
+                await chrome.storage.session.set({ activeSession: tabId });
+                
+                await Promise.allSettled([
+                    chrome.debugger.sendCommand({tabId}, "Page.enable", {}),
+                    chrome.debugger.sendCommand({tabId}, "Runtime.enable", {}),
+                    chrome.debugger.sendCommand({tabId}, "DOM.enable", {}),
+                    chrome.debugger.sendCommand({tabId}, "Debugger.enable", {}),
+                    chrome.debugger.sendCommand({tabId}, "Input.enable", {})
+                ]);
+                sendResponse({ success: true });
+            } catch (err) {
+                sendResponse({ success: false, error: err.message });
+            }
+        })();
         return true; 
     } else if (msg.action === "disconnect") {
-        chrome.storage.session.get("activeSession", async (res) => {
-            if (res.activeSession) {
-                chrome.debugger.detach({ tabId: res.activeSession }, () => {
-                    chrome.storage.session.set({ activeSession: null });
-                    sendResponse({ success: true });
-                });
-            } else {
+        (async () => {
+            try {
+                const res = await chrome.storage.session.get("activeSession");
+                if (res && res.activeSession) {
+                    try { await chrome.debugger.detach({ tabId: res.activeSession }); } catch (_) {}
+                    await chrome.storage.session.set({ activeSession: null });
+                }
                 sendResponse({ success: true });
+            } catch (err) {
+                sendResponse({ success: false, error: err.message });
             }
-        });
+        })();
         return true;
     } else if (msg.action === "status") {
-        chrome.storage.session.get(["connected", "activeSession"], (res) => {
-            sendResponse({ connected: !!res.connected, activeSession: res.activeSession });
+        chrome.storage.session.get(["connected", "activeSession", "activePort"], (res) => {
+            sendResponse({ connected: !!res.connected, activeSession: res.activeSession, activePort: res.activePort });
         });
         return true;
     } else if (msg.action === "set_port") {
-        const url = `ws://127.0.0.1:${msg.port}/mcp-relay`;
-        chrome.storage.session.set({ wsUrl: url }, () => {
+        const port = Number(msg.port);
+        chrome.storage.session.set({ preferredPort: port }, () => {
             sendResponse({ success: true });
-            connect(msg.port);
+            if (currentWs) {
+                try { currentWs.close(); } catch (_) {}
+            }
+            reconnectDelayMs = 500;
+            connect(port);
         });
         return true;
     }

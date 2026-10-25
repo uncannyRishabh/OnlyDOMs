@@ -4,12 +4,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use futures_util::{StreamExt, SinkExt};
 use serde_json::Value;
-use tracing::info;
+use tracing::{info, warn, error};
 use std::time::Duration;
 
 pub struct HubState {
     pub tx: Option<mpsc::Sender<Value>>,
     pub pending: HashMap<String, oneshot::Sender<Value>>,
+    pub active_port: u16,
 }
 
 impl HubState {
@@ -17,21 +18,65 @@ impl HubState {
         Self {
             tx: None,
             pending: HashMap::new(),
+            active_port: 9222,
         }
     }
 }
 
 pub type SharedHub = Arc<Mutex<HubState>>;
 
-pub async fn start_hub(addr: &str, state: SharedHub) {
-    let listener = TcpListener::bind(addr).await.expect("Failed to bind");
-    info!("WebSocket Hub listening on ws://{}", addr);
+pub async fn start_hub(initial_port: u16, state: SharedHub) {
+    let mut candidate_ports = vec![initial_port];
+    for p in &[9922, 9222, 9223, 9923, 9224, 9924] {
+        if !candidate_ports.contains(p) {
+            candidate_ports.push(*p);
+        }
+    }
+    for offset in 1..=5 {
+        let p = initial_port.saturating_add(offset);
+        if !candidate_ports.contains(&p) {
+            candidate_ports.push(p);
+        }
+    }
+
+    let mut listener = None;
+    let mut active_port = initial_port;
+
+    for port in candidate_ports {
+        let addr = format!("127.0.0.1:{}", port);
+        match TcpListener::bind(&addr).await {
+            Ok(l) => {
+                info!("WebSocket Hub listening on ws://{}", addr);
+                active_port = port;
+                listener = Some(l);
+                break;
+            }
+            Err(e) => {
+                warn!("Port {} unavailable ({}). Trying next candidate...", port, e);
+            }
+        }
+    }
+
+    let listener = match listener {
+        Some(l) => l,
+        None => {
+            error!("Failed to bind any WebSocket port candidate. Hub cannot start.");
+            return;
+        }
+    };
+
+    {
+        let mut lock = state.lock().await;
+        lock.active_port = active_port;
+    }
+
+    let _ = tokio::fs::write("/tmp/chromapilot_active_port.txt", active_port.to_string()).await;
 
     while let Ok((stream, _)) = listener.accept().await {
         let state_clone = state.clone();
         tokio::spawn(async move {
             if let Ok(ws_stream) = tokio_tungstenite::accept_async(stream).await {
-                info!("Extension connected to hub");
+                info!("Extension connected to hub on port {}", active_port);
                 let (mut write, mut read) = ws_stream.split();
                 
                 let (tx, mut rx) = mpsc::channel::<Value>(100);
@@ -61,7 +106,6 @@ pub async fn start_hub(addr: &str, state: SharedHub) {
                                     let _ = sender.send(val);
                                 }
                             } else if let Some(id_num) = val.get("id").and_then(|id| id.as_u64()) {
-                                // Fallback just in case
                                 let mut lock = state_for_read.lock().await;
                                 if let Some(sender) = lock.pending.remove(&id_num.to_string()) {
                                     let _ = sender.send(val);
@@ -83,17 +127,24 @@ pub async fn start_hub(addr: &str, state: SharedHub) {
 }
 
 pub async fn send_hub_command(state: SharedHub, cmd_type: &str, method: &str, params: Value) -> Result<Value, String> {
-    let (id, tx, rx) = {
-        let mut lock = state.lock().await;
-        let id = uuid::Uuid::new_v4().to_string();
-        let tx = match &lock.tx {
-            Some(tx) => tx.clone(),
-            None => return Err("No active browser session detected. Please install and toggle the extension ON in your target browser.".into()),
-        };
-        let (resp_tx, resp_rx) = oneshot::channel();
-        lock.pending.insert(id.clone(), resp_tx);
-        (id, tx, resp_rx)
+    // Wait briefly if extension is reconnecting or server was just started
+    let mut lock = state.lock().await;
+    let mut wait_count = 0;
+    while lock.tx.is_none() && wait_count < 35 {
+        drop(lock);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        lock = state.lock().await;
+        wait_count += 1;
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let tx = match &lock.tx {
+        Some(tx) => tx.clone(),
+        None => return Err("No active browser session detected. Please ensure the ChromaPilot Chrome extension is installed, enabled, and connected.".into()),
     };
+    let (resp_tx, resp_rx) = oneshot::channel::<Value>();
+    lock.pending.insert(id.clone(), resp_tx);
+    drop(lock);
 
     let mut msg = serde_json::json!({
         "type": cmd_type,
@@ -105,15 +156,19 @@ pub async fn send_hub_command(state: SharedHub, cmd_type: &str, method: &str, pa
         msg.as_object_mut().unwrap().insert("params".to_string(), params);
     } else if cmd_type == "INJECT_SCRIPT" {
         msg.as_object_mut().unwrap().insert("file".to_string(), params);
-    } else if cmd_type == "ATTACH_TAB" {
+    } else if cmd_type == "ATTACH_TAB" || cmd_type == "DETACH_TAB" {
         msg.as_object_mut().unwrap().insert("tabId".to_string(), params);
+    } else if let Some(obj) = params.as_object() {
+        for (k, v) in obj {
+            msg.as_object_mut().unwrap().insert(k.clone(), v.clone());
+        }
     }
 
     if tx.send(msg).await.is_err() {
-        return Err("Failed to send".into());
+        return Err("Failed to send command to browser".into());
     }
 
-    match tokio::time::timeout(Duration::from_secs(30), rx).await {
+    match tokio::time::timeout(Duration::from_secs(30), resp_rx).await {
         Ok(Ok(mut val)) => {
             if let Some(err) = val.get("error") {
                 Err(err.to_string())
@@ -123,8 +178,8 @@ pub async fn send_hub_command(state: SharedHub, cmd_type: &str, method: &str, pa
                 Ok(Value::Null)
             }
         }
-        Ok(Err(_)) => Err("Connection lost".into()),
-        Err(_) => Err("Request timed out".into())
+        Ok(Err(_)) => Err("Connection lost while waiting for browser response".into()),
+        Err(_) => Err("Request timed out waiting for browser response".into())
     }
 }
 

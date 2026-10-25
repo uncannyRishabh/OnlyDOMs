@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "MagiBot Browser Control",
+  "name": "ChromaPilot — Chromium Browser Control",
   "version": "1.0",
-  "description": "MCP Server extension for browser control",
+  "description": "MCP server extension for efficient Chromium browser control",
   "permissions": ["debugger", "tabs", "activeTab", "scripting", "storage", "alarms"],
   "host_permissions": ["<all_urls>"],
   "background": {

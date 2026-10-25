@@ -8,7 +8,7 @@ function drawGrid() {
             const dpr = window.devicePixelRatio || 1;
             
             const canvas = document.createElement('canvas');
-            canvas.id = 'magibot-grid-overlay';
+            canvas.id = 'chromapilot-grid-overlay';
             canvas.width = w; canvas.height = h;
             canvas.style.cssText = 'position:fixed;top:0;left:0;z-index:2147483647;pointer-events:none;';
             
@@ -51,10 +51,10 @@ function drawGrid() {
 function removeGrid() {
     return new Promise((resolve) => {
         requestAnimationFrame(() => {
-            const el = document.getElementById('magibot-grid-overlay');
+            const el = document.getElementById('chromapilot-grid-overlay');
             if (el) el.remove();
             resolve(true);
         });
     });
 }
-window.magibotGrid = { drawGrid, removeGrid };
+window.chromapilotGrid = { drawGrid, removeGrid };

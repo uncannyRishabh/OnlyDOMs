@@ -1,4 +1,4 @@
-window.magibotInput = {
+window.chromapilotInput = {
     fill: function(fields) {
         return new Promise((resolve) => {
             requestAnimationFrame(() => {

@@ -1,0 +1,19 @@
+# ChromaPilot Windsurf Rules & Auto-Initialization
+
+When asked to initialize, set up, or run this repository:
+
+1. Run `./setup.sh --install` to compile the release binary and automatically configure available MCP clients.
+2. The MCP server binary is located at `mcp-server/target/release/chromapilot`.
+3. To configure ChromaPilot in Windsurf manually (if not auto-registered via `./setup.sh --install`), add to `~/.codeium/windsurf/mcp_config.json`:
+   ```json
+   {
+     "mcpServers": {
+       "chromapilot": {
+         "command": "<absolute-path-to-repo>/mcp-server/target/release/chromapilot",
+         "args": ["--port", "9222"]
+       }
+     }
+   }
+   ```
+4. Instruct the user to load the unpacked extension from `<absolute-path-to-repo>/extension` at `chrome://extensions/`.
+5. When automating browser tasks, always prioritize `execute_browser_pipeline` to batch multi-step actions into a single compound turn.

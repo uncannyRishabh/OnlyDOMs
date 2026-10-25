@@ -1,0 +1,19 @@
+# ChromaPilot Cursor Rules & Initialization
+
+When asked to initialize, set up, or run this repository:
+
+1. Run `./setup.sh --install` (or `./setup.sh`) to compile the release binary and validate prerequisites.
+2. The MCP server binary is at `mcp-server/target/release/chromapilot`.
+3. Cursor configuration is pre-configured in `.cursor/mcp.json`:
+   ```json
+   {
+     "mcpServers": {
+       "chromapilot": {
+         "command": "${workspaceFolder}/mcp-server/target/release/chromapilot",
+         "args": ["--port", "9222"]
+       }
+     }
+   }
+   ```
+4. Instruct the user to load the unpacked extension from `<repo-root>/extension` at `chrome://extensions/`.
+5. When automating browser tasks, always prioritize `execute_browser_pipeline` to batch multi-step actions into a single turn.

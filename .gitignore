@@ -1,4 +1,9 @@
+target/
 /mcp-server/target/
 **/*.rs.bk
 .DS_Store
 *.log
+g2g_game_account_attributes.json
+*.tmp
+.env
+

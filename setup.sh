@@ -286,6 +286,13 @@ if [ "$REGISTER_ANTIGRAVITY" = true ]; then
     echo -e "\n${BLUE}▶ Registering with Antigravity / Gemini CLI...${NC}"
     ANTIGRAVITY_CONFIG="$HOME/.gemini/antigravity/mcp_config.json"
     register_mcp_config "Antigravity" "$ANTIGRAVITY_CONFIG"
+
+    # Install global agent skill if directory exists
+    if [ -d "$HOME/.gemini/config/skills" ]; then
+        mkdir -p "$HOME/.gemini/config/skills/chromapilot"
+        cp "$REPO_DIR/skills/chromapilot/SKILL.md" "$HOME/.gemini/config/skills/chromapilot/SKILL.md" 2>/dev/null && \
+            echo -e "  ${GREEN}✔${NC} Installed global agent skill in ~/.gemini/config/skills/chromapilot/SKILL.md" || true
+    fi
 fi
 
 # Claude Code CLI registration

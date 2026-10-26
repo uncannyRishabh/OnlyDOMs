@@ -512,7 +512,7 @@ AI agents using ChromaPilot should adhere to these production directives:
 4. **Token-Efficient Session Queries**:
    `list_browser_sessions` returns compact objects by default (`id`, `title`, `url`, `active`). Only pass `"detailed": true` if low-level CDP flags are required.
 
-*(See [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md) for the copy-pasteable system prompt block).*
+*(See [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md) and [`SKILL.md`](SKILL.md) for copy-pasteable agent directives and skill definitions).*
 
 ---
 

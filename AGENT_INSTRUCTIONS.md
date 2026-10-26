@@ -79,15 +79,32 @@ Before navigating to an external URL, inspect the active tab's URL:
 - `fill_inputs`: `{ "action": "fill_inputs", "fields": [{ "selector": "input[name='q']", "value": "search query" }] }` (framework-safe for React, Vue, Angular)
 - `press_key`: `{ "action": "press_key", "key": "Enter" }` (supports Enter, Tab, Escape, ArrowDown, etc.)
 - `sleep`: `{ "action": "sleep", "duration_ms": 500 }`
-- `capture_grid_screenshot`: `{ "action": "capture_grid_screenshot", "quality": 80 }`
+- `take_screenshot`: `{ "action": "take_screenshot", "full_page": false, "format": "png" }` (captures clean page content; set `save_path` to save directly to disk)
 
 ---
 
-## 4. Token Economy & Exploration Rules
+## 4. Automated Testing Engine (`run_browser_test`)
+
+For defect or feature validation, use `run_browser_test`. It breaks down your test description into executable steps, executes them with visual capture at each step, validates assertions, and writes comprehensive markdown and JSON reports in `test_reports/<test_name>_<timestamp>/`.
+
+```json
+{
+  "name": "run_browser_test",
+  "arguments": {
+    "test_name": "checkout_promo_code_validation",
+    "description": "1. Navigate to https://store.example.com/cart\n2. Fill input[name='coupon'] with INVALID99\n3. Click button.apply-coupon\n4. Assert .error-message is visible",
+    "full_page_screenshots": false
+  }
+}
+```
+
+---
+
+## 5. Token Economy & Exploration Rules
 
 1. **Zero Schema & Source Exploration**: Do NOT inspect `.json` schema files or local codebase files (`.rs`, `.js`). All schemas and actions are fully specified above.
 2. **Compound Batching Ceiling**: Standard tasks (e.g. open site, scroll, click, fill, send) MUST be dispatched in a single `execute_browser_pipeline` call rather than separate turn-by-turn micro-steps.
 3. **Anti-Bloat DOM Queries**: Never execute `document.querySelectorAll('*')` or dump full container `innerText`/`innerHTML` in `evaluate_expression`. Queries must be targeted (e.g. specific IDs, attributes, or scoped selectors).
 4. **Compact Tab Format**: `list_browser_sessions` returns lightweight objects `{ id, title, url, active }`. Only request `"detailed": true` if low-level Chromium debug flags are strictly required.
-5. **Screenshot Discipline**: Only call `capture_viewport` or include `capture_grid_screenshot` when visual inspection is explicitly needed.
+5. **Screenshot Discipline**: Use `take_screenshot` with `save_path` (or `run_browser_test`) when visual verification is needed. This avoids polluting context tokens with giant base64 image strings.
 ```

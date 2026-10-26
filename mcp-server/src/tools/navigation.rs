@@ -279,9 +279,37 @@ pub async fn execute_browser_pipeline(state: SharedHub, params: Value) -> Result
                 crate::tools::input::fill_inputs(state.clone(), serde_json::json!({ "fields": fields })).await?;
                 step_results.push(serde_json::json!({ "step": idx, "action": "fill_inputs", "status": "ok" }));
             }
+            "take_screenshot" => {
+                let full_page = step.get("full_page").and_then(|v| v.as_bool()).unwrap_or(false);
+                let format = step.get("format").and_then(|v| v.as_str()).unwrap_or("png");
+                let quality = step.get("quality").and_then(|v| v.as_u64());
+                let save_path = step.get("save_path").and_then(|v| v.as_str());
+                let mut params = serde_json::json!({
+                    "full_page": full_page,
+                    "format": format,
+                    "include_base64": true
+                });
+                if let Some(q) = quality {
+                    params["quality"] = serde_json::json!(q);
+                }
+                if let Some(sp) = save_path {
+                    params["save_path"] = serde_json::json!(sp);
+                }
+                if let Ok(res) = crate::tools::visual::take_screenshot(state.clone(), params).await {
+                    if let Some(b64) = res.get("base64_image").and_then(|v| v.as_str()) {
+                        screenshot = Some(b64.to_string());
+                    }
+                    step_results.push(serde_json::json!({ "step": idx, "action": "take_screenshot", "result": res }));
+                }
+            }
             "capture_grid_screenshot" => {
                 let quality = step.get("quality").and_then(|v| v.as_u64()).unwrap_or(80) as u32;
-                if let Ok(res) = crate::tools::visual::capture_viewport(state.clone(), quality).await {
+                if let Ok(res) = crate::tools::visual::take_screenshot(state.clone(), serde_json::json!({
+                    "full_page": false,
+                    "format": "webp",
+                    "quality": quality,
+                    "include_base64": true
+                })).await {
                     screenshot = res.get("base64_image").and_then(|v| v.as_str()).map(|s| s.to_string());
                 }
                 step_results.push(serde_json::json!({ "step": idx, "action": "capture_grid_screenshot" }));

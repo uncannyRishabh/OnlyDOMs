@@ -41,9 +41,10 @@
   - [Antigravity / Gemini CLI](#antigravity--gemini-cli)
   - [Zed Editor](#zed-editor)
 - [Architecture](#architecture)
-- [MCP Tools Reference (14 Tools)](#mcp-tools-reference)
+- [MCP Tools Reference (15 Tools)](#mcp-tools-reference)
 - [Resilient Browser Pipeline (`execute_browser_pipeline`)](#resilient-browser-pipeline-execute_browser_pipeline)
-- [Adaptive 16×N Grid System](#adaptive-16n-grid-system)
+- [Clean Page & Full-Page Screenshots (`take_screenshot`)](#clean-page--full-page-screenshots-take_screenshot)
+- [Automated Browser Testing Engine (`run_browser_test`)](#automated-browser-testing-engine-run_browser_test)
 - [Agent Operational Directives](#agent-operational-directives)
 - [Troubleshooting & FAQ](#troubleshooting--faq)
 - [Development & Testing](#development--testing)
@@ -67,7 +68,8 @@ Built with a high-performance **Rust MCP server** and a **Manifest V3 Chrome Ext
 - 🍪 **Zero Login Friction**: Runs directly inside your authenticated Chrome tabs—no credential injection needed.
 - 📦 **Compound Batch Pipeline (`execute_browser_pipeline`)**: Dispatches complex multi-step workflows (navigate, wait for selector, scroll, semantic click, fill inputs) in **a single model turn**, eliminating LLM latency loops and saving up to **80% token costs**.
 - 🗂️ **Browser-Wide Multi-Tab Control**: Query, open, switch, and close any tab across all Chrome windows without manual re-attachment.
-- 🎯 **Adaptive 16×N Visual Grid**: Resolution-independent coordinate mapping for pixel-perfect clicking on canvas, icons, and dynamic UI elements.
+- 📸 **Clean Page & Full-Page Screenshots**: Captures compositor surfaces directly from web content, completely excluding browser UI and DevTools control banners. Supports full scrollable page capture with disk saving to protect agent context.
+- 🧪 **Automated Browser Testing Engine (`run_browser_test`)**: Decomposes high-level defect or feature descriptions into executable steps, executes them with visual capture at each step, validates assertions, and writes comprehensive markdown and JSON reports in dedicated test folders.
 - 🛡️ **Framework-Safe Form Filling**: Emulates synthetic events for React, Angular, and Vue so modern reactive stores never drop typed input.
 - 🔍 **CDP Runtime & Debugging**: Set breakpoints, pause/resume execution, step over/into, and safely evaluate JS with payload-size protection.
 
@@ -360,7 +362,6 @@ In Zed's `settings.json`:
 │  │     ├── chrome.debugger protocol bridge             │
 │  │     ├── Browser-wide tab registry                   │
 │  │     └── Automatic heartbeat keepalive               │
-│  ├── content/overlay_manager.js (Adaptive 16×N grid)   │
 │  └── content/input_filler.js (Framework-safe forms)    │
 └───────────────────────────┬────────────────────────────┘
                             │ CDP Commands & DOM injection
@@ -375,18 +376,19 @@ In Zed's `settings.json`:
 
 ## MCP Tools Reference
 
-ChromaPilot exposes 14 tools designed for AI agent speed and token efficiency:
+ChromaPilot exposes 15 tools designed for AI agent speed, token efficiency, and automated testing:
 
 | Tool | Parameters | Description |
 |------|------------|-------------|
-| `execute_browser_pipeline` | `steps` (array) | **Primary compound tool.** Batches navigate, wait, click, fill, scroll, evaluate, and keys into one model turn. |
+| `execute_browser_pipeline` | `steps` (array) | **Primary compound tool.** Batches navigate, wait, click, fill, scroll, evaluate, keys, and screenshots into one model turn. |
+| `run_browser_test` | `test_name`, `description`, `output_dir`, `full_page_screenshots`, `continue_on_failure`, `steps` | **Automated testing engine.** Decomposes natural language descriptions into executable steps, executes them with visual capture, evaluates assertions, and writes markdown & JSON reports. |
+| `take_screenshot` | `full_page` (bool), `format` (`png`\|`webp`\|`jpeg`), `quality`, `save_path`, `include_base64` | **Clean page screenshot.** Captures web page viewport or full scrollable height directly from the compositor surface, strictly excluding DevTools banners. Saves to disk to avoid context token consumption. |
+| `capture_viewport` | `format`, `quality` | Captures clean viewport screenshot (backward-compatible alias for `take_screenshot`). |
 | `list_browser_sessions` | `detailed` (bool, optional) | Lists all open Chrome tabs across all windows in compact format (`id`, `title`, `url`, `active`). |
 | `create_tab` | `url` (string, optional) | Opens a new tab with optional URL and immediately attaches the debugger. |
 | `switch_tab` | `tab_id` (number) | Switches focus to a specific Chrome tab. |
 | `close_tab` | `tab_id` (number) | Closes a specific tab by ID. |
 | `select_session` | `session_id` (string/number) | Directs debugger focus to a target tab. |
-| `capture_viewport` | `cols` (number, default: 16) | Captures screenshot with the adaptive 16×N overlay grid. |
-| `click_quadrant` | `cell` (string), `offset_x_ratio`, `offset_y_ratio`, `click_count` | Clicks a grid cell (e.g. `D4`) with optional sub-cell offsets. |
 | `fill_inputs` | `fields` (array of `{selector, value}`) | Framework-safe form input simulation (React, Angular, Vue). |
 | `interact` | `action` (`click`\|`hover`\|`scroll`), `x_ratio`, `y_ratio`, `deltaX`, `deltaY` | Coordinate-based interaction using normalized ratios (0.0 to 1.0). |
 | `evaluate_expression` | `expression` (string) | Evaluates arbitrary JavaScript via CDP `Runtime.evaluate` (with safety length guards). |
@@ -421,7 +423,8 @@ Instead of dispatching single-turn requests that waste model context, use `execu
 - `fill_inputs`: `{ "action": "fill_inputs", "fields": [{ "selector": "input[name='q']", "value": "ChromaPilot" }] }`
 - `press_key`: `{ "action": "press_key", "key": "Enter" }`
 - `sleep`: `{ "action": "sleep", "duration_ms": 1000 }`
-- `capture_grid_screenshot`: `{ "action": "capture_grid_screenshot", "quality": 80 }`
+- `take_screenshot`: `{ "action": "take_screenshot", "full_page": false, "format": "png", "save_path": "reports/step1.png" }`
+- `capture_grid_screenshot`: `{ "action": "capture_grid_screenshot", "quality": 80 }` *(alias for clean screenshot)*
 
 ### Example: End-to-End Search & Form Fill in One Turn
 
@@ -444,26 +447,53 @@ Instead of dispatching single-turn requests that waste model context, use `execu
 
 ---
 
-## Adaptive 16×N Grid System
+## Clean Page & Full-Page Screenshots (`take_screenshot`)
 
-The viewport is divided into an adaptive **16×N grid**:
-- **16 Columns**: Labeled `A` through `P` (left to right).
-- **N Rows**: Dynamically computed from viewport aspect ratio:  
-  $$\text{rows} = \text{round}\left(16 \times \frac{\text{height}}{\text{width}}\right)$$
-- Standard 16:9 displays yield cells from `A1` to `P9`.
-- Coordinates are resolution-independent and map to true CSS pixels regardless of device pixel ratio (DPR) or zoom.
+ChromaPilot captures screenshots directly from Chromium's web page compositor surface (`fromSurface: true`). This ensures:
+1. **Zero Browser Chrome**: Tabs, URL bar, bookmarks, and developer tools windows are never captured.
+2. **Infobar Exclusion**: The `"ChromaPilot is debugging this browser"` / `"Chrome is being controlled by automated test software"` banner is completely excluded from the captured pixels.
+3. **Full-Page Capture**: By querying layout metrics and setting `captureBeyondViewport: true` with dynamic clipping, ChromaPilot captures the entire scrollable height of long articles, dashboards, and feeds.
+4. **Context Token Protection**: Passing `save_path` decodes and persists the binary image directly to disk, returning compact file metadata instead of flooding model context with megabytes of base64 data.
 
 ```json
 {
-  "name": "click_quadrant",
+  "name": "take_screenshot",
   "arguments": {
-    "cell": "H5",
-    "offset_x_ratio": 0.0,
-    "offset_y_ratio": 0.0,
-    "click_count": 1
+    "full_page": true,
+    "format": "png",
+    "save_path": "artifacts/dashboard_full.png"
   }
 }
 ```
+
+> **Clean Launch Tip**: To suppress the extension debugging banner in Chrome entirely, launch Chrome with:
+> ```bash
+> /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --silent-debugger-extension-api
+> ```
+
+---
+
+## Automated Browser Testing Engine (`run_browser_test`)
+
+ChromaPilot features an autonomous test runner designed to validate defects and features. You can provide a high-level natural language description or structured steps:
+
+```json
+{
+  "name": "run_browser_test",
+  "arguments": {
+    "test_name": "invalid_coupon_code_validation",
+    "description": "1. Navigate to https://shop.example.com/checkout\n2. Fill input[name='coupon'] with BOGUS99\n3. Click button.apply\n4. Wait for .error-banner\n5. Assert document.querySelector('.error-banner').innerText.includes('Coupon not valid')",
+    "full_page_screenshots": false,
+    "continue_on_failure": false
+  }
+}
+```
+
+### Generated Artifacts
+For every test execution, ChromaPilot creates a dedicated directory (`test_reports/<test_name>_<timestamp>/`) containing:
+- `step_01_navigate_to_checkout.png`, `step_02_fill_coupon.png`, etc.
+- `test_summary.md`: Human-readable markdown report with verdicts, timings, assertion checks, and inline screenshots.
+- `test_report.json`: Machine-readable structured test data for CI/CD pipelines.
 
 ---
 

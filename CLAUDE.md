@@ -50,7 +50,6 @@ When a user pastes this repo link or asks you to initialize, set up, or run Chro
     ▼
 [Chrome Extension (Manifest V3)]
     ├── background.js: Service Worker, chrome.debugger API, multi-tab routing
-    ├── content/overlay_manager.js: Adaptive 16×N visual grid overlay
     └── content/input_filler.js: Framework-safe DOM input simulation
 ```
 

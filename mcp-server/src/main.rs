@@ -122,11 +122,65 @@ async fn main() {
                                 },
                                 {
                                     "name": "capture_viewport",
-                                    "description": "Capture a screenshot of the viewport with an adaptive 16xN overlay grid",
+                                    "description": "Capture a clean screenshot of the current page viewport (excludes DevTools/browser infobars)",
                                     "inputSchema": {
                                         "type": "object",
                                         "properties": {
-                                            "cols": { "type": "number", "description": "Number of columns (default: 16)" }
+                                            "format": { "type": "string", "enum": ["png", "webp", "jpeg"], "description": "Image format (default: webp)" },
+                                            "quality": { "type": "number", "description": "Image quality 0-100 (for webp/jpeg)" }
+                                        }
+                                    }
+                                },
+                                {
+                                    "name": "take_screenshot",
+                                    "description": "Capture a clean screenshot of the web page (viewport or full scrollable page). Saves to disk if save_path is provided to avoid context token consumption.",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "full_page": { "type": "boolean", "description": "Capture entire scrollable page height instead of just viewport (default: false)" },
+                                            "format": { "type": "string", "enum": ["png", "webp", "jpeg"], "description": "Image format (default: png)" },
+                                            "quality": { "type": "number", "description": "Image quality 0-100 for webp/jpeg" },
+                                            "save_path": { "type": "string", "description": "Optional file path to save binary image directly on disk" },
+                                            "include_base64": { "type": "boolean", "description": "Include base64 image data in response (default: true if save_path not set, false if save_path is set)" }
+                                        }
+                                    }
+                                },
+                                {
+                                    "name": "run_browser_test",
+                                    "description": "Automated browser testing engine. Decomposes high-level defect or feature descriptions into executable steps, executes them with visual capture at each step, validates assertions, and produces markdown summaries and JSON reports in dedicated test folders.",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "test_name": { "type": "string", "description": "Name or identifier for the test (e.g. 'checkout_coupon_error')" },
+                                            "description": { "type": "string", "description": "Detailed defect or feature description to validate. If steps are not provided, this is automatically decomposed into executable steps." },
+                                            "output_dir": { "type": "string", "description": "Custom directory to save test reports and step screenshots (default: test_reports/<test_name>_<timestamp>)" },
+                                            "full_page_screenshots": { "type": "boolean", "description": "Capture full scrollable page for step screenshots (default: false)" },
+                                            "continue_on_failure": { "type": "boolean", "description": "Continue executing remaining steps after a step fails (default: false)" },
+                                            "steps": {
+                                                "type": "array",
+                                                "description": "Optional explicit list of test steps. If omitted, steps are parsed from description.",
+                                                "items": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "name": { "type": "string", "description": "Human-readable step title" },
+                                                        "action": {
+                                                            "type": "string",
+                                                            "enum": ["navigate", "click", "fill_inputs", "press_key", "scroll", "wait_for", "wait_condition", "wait_network_idle", "evaluate", "sleep", "assert"],
+                                                            "description": "Action type"
+                                                        },
+                                                        "url": { "type": "string" },
+                                                        "selector": { "type": "string" },
+                                                        "text": { "type": "string" },
+                                                        "aria_label": { "type": "string" },
+                                                        "expression": { "type": "string" },
+                                                        "key": { "type": "string" },
+                                                        "screenshot": { "type": "boolean" },
+                                                        "full_page": { "type": "boolean" },
+                                                        "optional": { "type": "boolean" }
+                                                    },
+                                                    "required": ["action"]
+                                                }
+                                            }
                                         }
                                     }
                                 },
@@ -138,13 +192,13 @@ async fn main() {
                                         "properties": {
                                             "steps": {
                                                 "type": "array",
-                                                "description": "Ordered actions: navigate, new_tab, switch_tab, wait_for, wait_condition, wait_network_idle, click, scroll, evaluate, fill_inputs, press_key, sleep, capture_grid_screenshot",
+                                                "description": "Ordered actions: navigate, new_tab, switch_tab, wait_for, wait_condition, wait_network_idle, click, scroll, evaluate, fill_inputs, press_key, sleep, take_screenshot, capture_grid_screenshot",
                                                 "items": {
                                                     "type": "object",
                                                     "properties": {
                                                         "action": {
                                                             "type": "string",
-                                                            "enum": ["navigate", "new_tab", "switch_tab", "wait_for", "wait_condition", "wait_network_idle", "click", "scroll", "evaluate", "fill_inputs", "press_key", "sleep", "capture_grid_screenshot"],
+                                                            "enum": ["navigate", "new_tab", "switch_tab", "wait_for", "wait_condition", "wait_network_idle", "click", "scroll", "evaluate", "fill_inputs", "press_key", "sleep", "take_screenshot", "capture_grid_screenshot"],
                                                             "description": "Action type"
                                                         },
                                                         "url": { "type": "string", "description": "URL for navigate or new_tab" },
@@ -182,20 +236,6 @@ async fn main() {
                                     }
                                 },
                                 {
-                                    "name": "click_quadrant",
-                                    "description": "Click a cell on the 16xN grid (e.g. 'D3')",
-                                    "inputSchema": {
-                                        "type": "object",
-                                        "properties": {
-                                            "cell": { "type": "string", "description": "Grid cell label, e.g. 'D4' or 'G12'" },
-                                            "offset_x_ratio": { "type": "number", "description": "Sub-cell horizontal offset (-0.5 to 0.5)" },
-                                            "offset_y_ratio": { "type": "number", "description": "Sub-cell vertical offset (-0.5 to 0.5)" },
-                                            "click_count": { "type": "number", "description": "Number of clicks (1 for single, 2 for double)" }
-                                        },
-                                        "required": ["cell"]
-                                    }
-                                },
-                                {
                                     "name": "fill_inputs",
                                     "description": "Framework-safe batch form input filling (React, Vue, Angular)",
                                     "inputSchema": {
@@ -207,7 +247,6 @@ async fn main() {
                                                     "type": "object",
                                                     "properties": {
                                                         "selector": { "type": "string", "description": "CSS selector for input" },
-                                                        "cell": { "type": "string", "description": "Grid cell if using coordinate mapping" },
                                                         "value": { "type": "string", "description": "Text value to fill" }
                                                     },
                                                     "required": ["value"]
@@ -312,14 +351,16 @@ async fn main() {
                                 }
                             }
                             "capture_viewport" => {
-                                let cols = parse_u64(args.get("cols")).unwrap_or(16) as u32;
-                                tools::visual::capture_viewport(state.clone(), cols).await
+                                tools::visual::capture_viewport(state.clone(), args).await
+                            }
+                            "take_screenshot" => {
+                                tools::visual::take_screenshot(state.clone(), args).await
+                            }
+                            "run_browser_test" => {
+                                tools::testing::run_browser_test(state.clone(), args).await
                             }
                             "execute_browser_pipeline" => {
                                 tools::navigation::execute_browser_pipeline(state.clone(), args).await
-                            }
-                            "click_quadrant" => {
-                                tools::input::click_quadrant(state.clone(), args).await
                             }
                             "fill_inputs" => {
                                 tools::input::fill_inputs(state.clone(), args).await

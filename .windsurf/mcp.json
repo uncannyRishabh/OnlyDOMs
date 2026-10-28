@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "chromapilot": {
+      "command": "/Users/rishabhrajgupta/Developer/chromapilot-browser-automation/mcp-server/target/release/chromapilot",
+      "args": ["--port", "9222"]
+    }
+  }
+}

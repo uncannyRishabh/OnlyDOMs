@@ -452,7 +452,7 @@ pub struct StepExecutionRecord {
 }
 
 /// Execute a single browser step.
-async fn execute_step(state: SharedHub, step: &Value) -> Result<(), String> {
+async fn execute_step(state: SharedHub, tab_id: Option<u64>, step: &Value) -> Result<(), String> {
     let action = step.get("action").and_then(|v| v.as_str()).unwrap_or("");
     match action {
         "navigate" => {
@@ -460,7 +460,7 @@ async fn execute_step(state: SharedHub, step: &Value) -> Result<(), String> {
             if url.is_empty() {
                 return Err("Navigate step missing 'url'".to_string());
             }
-            let nav_res = send_cdp_command(state.clone(), "Page.navigate", serde_json::json!({ "url": url })).await?;
+            let nav_res = send_cdp_command(state.clone(), tab_id, "Page.navigate", serde_json::json!({ "url": url })).await?;
             if let Some(err_text) = nav_res.get("errorText").and_then(|v| v.as_str()) {
                 return Err(format!("Navigation to '{}' failed: {}", url, err_text));
             }
@@ -469,7 +469,7 @@ async fn execute_step(state: SharedHub, step: &Value) -> Result<(), String> {
             // Wait for document ready with timeout protection
             let _ = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                send_cdp_command(state.clone(), "Runtime.evaluate", serde_json::json!({
+                send_cdp_command(state.clone(), tab_id, "Runtime.evaluate", serde_json::json!({
                     "expression": "new Promise(resolve => { if (document.readyState === 'complete') resolve(true); else { window.addEventListener('load', () => resolve(true), {once: true}); setTimeout(() => resolve(true), 3000); } })",
                     "awaitPromise": true
                 }))
@@ -530,7 +530,7 @@ async fn execute_step(state: SharedHub, step: &Value) -> Result<(), String> {
             let start = Instant::now();
             let mut clicked = false;
             while start.elapsed().as_millis() as u64 <= timeout_ms {
-                if let Ok(val) = send_cdp_command(state.clone(), "Runtime.evaluate", serde_json::json!({
+                if let Ok(val) = send_cdp_command(state.clone(), tab_id, "Runtime.evaluate", serde_json::json!({
                     "expression": click_expr,
                     "returnByValue": true
                 })).await {
@@ -552,7 +552,7 @@ async fn execute_step(state: SharedHub, step: &Value) -> Result<(), String> {
         }
         "fill_inputs" => {
             let fields = step.get("fields").cloned().unwrap_or(serde_json::json!([]));
-            let res = crate::tools::input::fill_inputs(state.clone(), serde_json::json!({ "fields": fields })).await?;
+            let res = crate::tools::input::fill_inputs(state.clone(), tab_id, serde_json::json!({ "fields": fields })).await?;
             // Inspect fill results to verify all fields were located and populated
             if let Some(val_str) = res.get("result").and_then(|r| r.get("value")).and_then(|v| v.as_str()) {
                 if let Ok(items) = serde_json::from_str::<Vec<Value>>(val_str) {
@@ -568,12 +568,12 @@ async fn execute_step(state: SharedHub, step: &Value) -> Result<(), String> {
         }
         "press_key" => {
             let key = step.get("key").and_then(|v| v.as_str()).unwrap_or("Enter");
-            send_cdp_command(state.clone(), "Input.dispatchKeyEvent", serde_json::json!({
+            send_cdp_command(state.clone(), tab_id, "Input.dispatchKeyEvent", serde_json::json!({
                 "type": "rawKeyDown",
                 "key": key
             })).await?;
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            send_cdp_command(state.clone(), "Input.dispatchKeyEvent", serde_json::json!({
+            send_cdp_command(state.clone(), tab_id, "Input.dispatchKeyEvent", serde_json::json!({
                 "type": "keyUp",
                 "key": key
             })).await?;
@@ -605,7 +605,7 @@ async fn execute_step(state: SharedHub, step: &Value) -> Result<(), String> {
                 }})()",
                 sel = sel_json, dx = delta_x, dy = delta_y
             );
-            send_cdp_command(state.clone(), "Runtime.evaluate", serde_json::json!({
+            send_cdp_command(state.clone(), tab_id, "Runtime.evaluate", serde_json::json!({
                 "expression": scroll_expr,
                 "returnByValue": true
             })).await?;
@@ -624,7 +624,7 @@ async fn execute_step(state: SharedHub, step: &Value) -> Result<(), String> {
             );
             let start = Instant::now();
             while start.elapsed().as_millis() as u64 <= timeout_ms {
-                if let Ok(val) = send_cdp_command(state.clone(), "Runtime.evaluate", serde_json::json!({
+                if let Ok(val) = send_cdp_command(state.clone(), tab_id, "Runtime.evaluate", serde_json::json!({
                     "expression": expr,
                     "returnByValue": true
                 })).await {
@@ -641,7 +641,7 @@ async fn execute_step(state: SharedHub, step: &Value) -> Result<(), String> {
             let timeout_ms = step.get("timeout_ms").and_then(|v| v.as_u64()).unwrap_or(8000);
             let start = Instant::now();
             while start.elapsed().as_millis() as u64 <= timeout_ms {
-                if let Ok(val) = send_cdp_command(state.clone(), "Runtime.evaluate", serde_json::json!({
+                if let Ok(val) = send_cdp_command(state.clone(), tab_id, "Runtime.evaluate", serde_json::json!({
                     "expression": expr,
                     "returnByValue": true,
                     "awaitPromise": true
@@ -658,7 +658,7 @@ async fn execute_step(state: SharedHub, step: &Value) -> Result<(), String> {
             let timeout_ms = step.get("timeout_ms").and_then(|v| v.as_u64()).unwrap_or(5000);
             let start = Instant::now();
             while start.elapsed().as_millis() as u64 <= timeout_ms {
-                let res = send_cdp_command(state.clone(), "Runtime.evaluate", serde_json::json!({
+                let res = send_cdp_command(state.clone(), tab_id, "Runtime.evaluate", serde_json::json!({
                     "expression": "performance.getEntriesByType('resource').filter(e => !e.responseEnd).length === 0",
                     "returnByValue": true
                 })).await;
@@ -673,7 +673,7 @@ async fn execute_step(state: SharedHub, step: &Value) -> Result<(), String> {
         }
         "evaluate" => {
             let expr = step.get("expression").and_then(|v| v.as_str()).unwrap_or("");
-            send_cdp_command(state.clone(), "Runtime.evaluate", serde_json::json!({
+            send_cdp_command(state.clone(), tab_id, "Runtime.evaluate", serde_json::json!({
                 "expression": expr,
                 "returnByValue": true,
                 "awaitPromise": true
@@ -686,14 +686,14 @@ async fn execute_step(state: SharedHub, step: &Value) -> Result<(), String> {
             Ok(())
         }
         "assert" => {
-            check_assertion(state, step).await
+            check_assertion(state, tab_id, step).await
         }
         _ => Err(format!("Unknown action: '{}'", action)),
     }
 }
 
 /// Check assertion parameters on a step with polling resilience and exception diagnostics.
-async fn check_assertion(state: SharedHub, step: &Value) -> Result<(), String> {
+async fn check_assertion(state: SharedHub, tab_id: Option<u64>, step: &Value) -> Result<(), String> {
     let timeout_ms = step.get("timeout_ms").and_then(|v| v.as_u64()).unwrap_or(3000);
     let negative = step.get("negative").and_then(|v| v.as_bool()).unwrap_or(false);
 
@@ -725,7 +725,7 @@ async fn check_assertion(state: SharedHub, step: &Value) -> Result<(), String> {
         let mut pass = false;
 
         if let Some(expr) = expression {
-            let res = send_cdp_command(state.clone(), "Runtime.evaluate", serde_json::json!({
+            let res = send_cdp_command(state.clone(), tab_id, "Runtime.evaluate", serde_json::json!({
                 "expression": expr,
                 "returnByValue": true,
                 "awaitPromise": true
@@ -759,7 +759,7 @@ async fn check_assertion(state: SharedHub, step: &Value) -> Result<(), String> {
                 "(() => {{ const el = document.querySelector({sel}); return !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length)); }})()",
                 sel = sel_json
             );
-            if let Ok(res) = send_cdp_command(state.clone(), "Runtime.evaluate", serde_json::json!({
+            if let Ok(res) = send_cdp_command(state.clone(), tab_id, "Runtime.evaluate", serde_json::json!({
                 "expression": dom_expr,
                 "returnByValue": true
             })).await {
@@ -779,7 +779,7 @@ async fn check_assertion(state: SharedHub, step: &Value) -> Result<(), String> {
                 "(() => {{ return !!(document.body && (document.body.innerText || '').includes({txt})); }})()",
                 txt = txt_json
             );
-            if let Ok(res) = send_cdp_command(state.clone(), "Runtime.evaluate", serde_json::json!({
+            if let Ok(res) = send_cdp_command(state.clone(), tab_id, "Runtime.evaluate", serde_json::json!({
                 "expression": txt_expr,
                 "returnByValue": true
             })).await {
@@ -879,7 +879,7 @@ pub fn generate_markdown_summary(
 }
 
 /// Run an automated browser test from description or structured steps.
-pub async fn run_browser_test(state: SharedHub, params: Value) -> Result<Value, String> {
+pub async fn run_browser_test(state: SharedHub, tab_id: Option<u64>, params: Value) -> Result<Value, String> {
     let raw_name = params.get("test_name").and_then(|v| v.as_str()).unwrap_or("");
     let description = params.get("description").and_then(|v| v.as_str()).unwrap_or("");
     let full_page_screenshots = params.get("full_page_screenshots").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -943,7 +943,7 @@ pub async fn run_browser_test(state: SharedHub, params: Value) -> Result<Value, 
         let optional = step.get("optional").and_then(|v| v.as_bool()).unwrap_or(false);
 
         let step_start = Instant::now();
-        let step_res = execute_step(state.clone(), step).await;
+        let step_res = execute_step(state.clone(), tab_id, step).await;
         let step_duration = step_start.elapsed().as_millis() as u64;
 
         let (status, err_msg) = match step_res {
@@ -976,7 +976,7 @@ pub async fn run_browser_test(state: SharedHub, params: Value) -> Result<Value, 
                 "include_base64": false
             });
 
-            if let Ok(_) = take_screenshot(state.clone(), screenshot_params).await {
+            if let Ok(_) = take_screenshot(state.clone(), tab_id, screenshot_params).await {
                 screenshot_file = Some(filename);
             }
         }

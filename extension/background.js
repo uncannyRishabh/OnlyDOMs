@@ -99,6 +99,11 @@ function connect(overridePort) {
                 return;
             }
 
+            if (data.type === "PING") {
+                try { ws.send(JSON.stringify({ id: data.id, result: "pong" })); } catch (_) {}
+                return;
+            }
+
             if (data.type === "CDP_CMD") {
                 try {
                     const targetTabId = await resolveTargetTab(data.tabId);
@@ -125,11 +130,25 @@ function connect(overridePort) {
             } else if (data.type === "LIST_TABS") {
                 try {
                     const tabs = await chrome.tabs.query({});
-                    // Token-efficient tab list: omit bulky internal flags unless detailed is explicitly true
+                    // Token-efficient tab list: strip http/https and query params unless detailed is true
+                    const cleanUrl = (rawUrl) => {
+                        if (!rawUrl) return "";
+                        try {
+                            const u = new URL(rawUrl);
+                            if (u.protocol === "http:" || u.protocol === "https:") {
+                                let path = u.pathname;
+                                if (path === "/") path = "";
+                                return `${u.host}${path}`;
+                            }
+                            return `${u.protocol}//${u.host || ""}${u.pathname}`;
+                        } catch (_) {
+                            return rawUrl.replace(/^https?:\/\//i, "").split(/[?#]/)[0];
+                        }
+                    };
                     const resultTabs = data.detailed ? tabs : tabs.map(t => ({
                         id: t.id,
                         title: t.title || "",
-                        url: t.url || "",
+                        url: cleanUrl(t.url),
                         active: !!t.active,
                         windowId: t.windowId
                     }));
@@ -141,7 +160,14 @@ function connect(overridePort) {
                 try {
                     const url = data.url || "about:blank";
                     const newTab = await chrome.tabs.create({ url, active: true });
-                    const tabId = await resolveTargetTab(newTab.id);
+                    try {
+                        await resolveTargetTab(newTab.id);
+                    } catch (attachErr) {
+                        const msg = attachErr?.message || "";
+                        if (!msg.includes("Cannot access") && !msg.includes("chrome://")) {
+                            throw attachErr;
+                        }
+                    }
                     ws.send(JSON.stringify({ id: data.id, result: { success: true, tabId: newTab.id } }));
                 } catch (e) {
                     ws.send(JSON.stringify({ id: data.id, error: e.message }));
@@ -150,8 +176,27 @@ function connect(overridePort) {
                 try {
                     const tabId = Number(data.tabId);
                     await chrome.tabs.update(tabId, { active: true });
-                    await resolveTargetTab(tabId);
+                    try {
+                        await resolveTargetTab(tabId);
+                    } catch (attachErr) {
+                        const msg = attachErr?.message || "";
+                        if (!msg.includes("Cannot access") && !msg.includes("chrome://")) {
+                            throw attachErr;
+                        }
+                    }
                     ws.send(JSON.stringify({ id: data.id, result: { success: true, tabId } }));
+                } catch (e) {
+                    ws.send(JSON.stringify({ id: data.id, error: e.message }));
+                }
+            } else if (data.type === "NAVIGATE_TAB") {
+                try {
+                    const tabId = Number(data.tabId);
+                    const url = data.url;
+                    await chrome.tabs.update(tabId, { url });
+                    setTimeout(async () => {
+                        try { await resolveTargetTab(tabId); } catch (_) {}
+                    }, 500);
+                    ws.send(JSON.stringify({ id: data.id, result: { success: true, tabId, url } }));
                 } catch (e) {
                     ws.send(JSON.stringify({ id: data.id, error: e.message }));
                 }

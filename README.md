@@ -33,13 +33,16 @@
 - [Quick Start for Developers](#quick-start-for-developers)
 - [🚀 Real-World Usage & Example Prompts](#-real-world-usage--example-prompts)
 - [MCP Client Configurations](#mcp-client-configurations)
+  - [🔌 AI Apps & IDE Integration Matrix](#-ai-apps--ide-integration-matrix)
   - [Cursor (Zero-Config Workspace)](#cursor)
   - [VS Code / Cline / Roo Code (Zero-Config Workspace)](#vs-code-cline--roo-code)
+  - [JetBrains / IntelliJ IDEA (PyCharm, WebStorm, etc.)](#jetbrains--intellij-idea)
   - [Claude Desktop](#claude-desktop)
   - [Claude Code CLI](#claude-code-cli)
   - [Windsurf](#windsurf)
   - [Antigravity / Gemini CLI](#antigravity--gemini-cli)
   - [Zed Editor](#zed-editor)
+- [⚡ Preemptive Health Check & Direct CLI Protocol](#-preemptive-health-check--direct-cli-protocol)
 - [Architecture](#architecture)
 - [MCP Tools Reference (15 Tools)](#mcp-tools-reference)
 - [Resilient Browser Pipeline (`execute_browser_pipeline`)](#resilient-browser-pipeline-execute_browser_pipeline)
@@ -243,6 +246,23 @@ ChromaPilot uses synthetic event dispatching safe for React, Vue, and Angular:
 
 ## MCP Client Configurations
 
+### 🔌 AI Apps & IDE Integration Matrix
+
+ChromaPilot seamlessly connects to any modern AI coding environment, agentic IDE, or desktop assistant through standard Model Context Protocol (MCP) or direct CLI:
+
+| AI Application / IDE | Configuration Path | Setup Mode | Multi-Tab Locking |
+|----------------------|--------------------|------------|-------------------|
+| **Cursor** | `.cursor/mcp.json` or Cursor Settings $\rightarrow$ MCP | Auto-generated via `./setup.sh` | 🟢 Exclusive tab locks |
+| **VS Code** (Cline / Roo Code / Continue) | `.vscode/mcp.json` or Extension Settings | Auto-generated via `./setup.sh` | 🟢 Exclusive tab locks |
+| **JetBrains / IntelliJ IDEA** (PyCharm, WebStorm, etc.) | `.idea/mcp.json` or JetBrains MCP settings | Auto-generated via `./setup.sh` | 🟢 Exclusive tab locks |
+| **Windsurf** | `~/.codeium/windsurf/mcp_config.json` or `.windsurf/mcp.json` | Auto-configured via `./setup.sh --install` | 🟢 Exclusive tab locks |
+| **Claude Desktop** | `claude_desktop_config.json` | Auto-configured via `./setup.sh --install` | 🟢 Exclusive tab locks |
+| **Claude Code CLI** | `claude mcp add chromapilot ...` | Auto-registered via `claude mcp add` | 🟢 Exclusive tab locks |
+| **Google Antigravity & Gemini CLI** | `~/.gemini/antigravity/mcp_config.json` & SKILL.md | Auto-installed via `./setup.sh --install` | 🟢 Exclusive tab locks |
+| **Zed Editor** | `~/.config/zed/settings.json` (`context_servers`) | Manual 3-line copy-paste | 🟢 Exclusive tab locks |
+
+---
+
 ### Cursor
 *Pre-configured out of the box via project-level `.cursor/mcp.json`:*
 ```json
@@ -268,6 +288,25 @@ ChromaPilot uses synthetic event dispatching safe for React, Vue, and Angular:
   }
 }
 ```
+
+### JetBrains / IntelliJ IDEA
+Works across the entire JetBrains ecosystem (**IntelliJ IDEA Ultimate/Community, PyCharm, WebStorm, GoLand, RustRover, CLion**) with JetBrains AI Assistant, Junie, or MCP plugins.
+
+*Pre-configured out of the box via project-level `.idea/mcp.json`:*
+```json
+{
+  "mcpServers": {
+    "chromapilot": {
+      "command": "<ABSOLUTE_REPO_PATH>/mcp-server/target/release/chromapilot",
+      "args": ["--port", "9222"]
+    }
+  }
+}
+```
+*Or add to JetBrains global MCP configuration:*
+- **macOS**: `~/Library/Application Support/JetBrains/mcp.json`
+- **Linux**: `~/.config/JetBrains/mcp.json`
+- **Windows**: `%APPDATA%\JetBrains\mcp.json`
 
 ### Claude Desktop
 
@@ -337,6 +376,68 @@ In Zed's `settings.json`:
   }
 }
 ```
+
+---
+
+## ⚡ Preemptive Health Check & Direct CLI Protocol
+
+When an AI agent (in Antigravity, Cursor, Windsurf, Claude Code, VS Code, or IntelliJ) interacts with the browser, it must follow this **preemptive check-and-start protocol** before attempting operations:
+
+### 1. Preemptive Pre-Flight Health Check
+
+```mermaid
+flowchart TD
+    Start[User/Agent requests browser action] --> CheckBin{Binary exists?}
+    CheckBin -- No --> RunBuild["Run ./setup.sh or cargo build --release"]
+    RunBuild --> CheckDaemon
+    CheckBin -- Yes --> CheckDaemon{Daemon running?}
+    CheckDaemon -- No --> StartDaemon["Start daemon: chromapilot daemon --port 9222"]
+    StartDaemon --> CheckExt
+    CheckDaemon -- Yes --> CheckExt{Extension connected?}
+    CheckExt -- No --> NotifyExt["Ensure extension toolbar icon shows 🟢 Connected (Port 9222)"]
+    CheckExt -- Yes --> Exec{"MCP tools available?"}
+    Exec -- Yes --> UseMCP["Execute via native MCP tools (execute_browser_pipeline, create_tab, etc.)"]
+    Exec -- No --> UseCLI["Execute via first-class CLI subcommands (open, tabs, eval, pipeline)"]
+```
+
+1. **Check Binary Build**: Verify `<repo>/mcp-server/target/release/chromapilot` exists. If missing, compile it with `./setup.sh` or `cargo build --release --manifest-path mcp-server/Cargo.toml`.
+2. **Check Daemon Status**: Run:
+   ```bash
+   ./mcp-server/target/release/chromapilot status
+   ```
+   If not running, launch it or let the MCP proxy auto-spawn it:
+   ```bash
+   ./mcp-server/target/release/chromapilot daemon --port 9222
+   ```
+3. **Verify Chrome Extension Connection**:
+   Ensure the ChromaPilot extension icon in Chrome shows 🟢 **Connected** (Port `9222`).
+
+---
+
+### 2. First-Class CLI Subcommands (Zero Ad-Hoc Scripts Required)
+
+If an agent's MCP tool-calling interface is temporarily unattached or running inside a headless terminal, **do not write ad-hoc Python or shell scripts**. ChromaPilot provides dedicated, compiled CLI subcommands directly out of the box:
+
+```bash
+# 1. Open a new tab and attach to it
+./mcp-server/target/release/chromapilot open "https://www.instagram.com"
+
+# 2. List all open tabs (with token-efficient cleaned URLs & active indicators)
+./mcp-server/target/release/chromapilot tabs
+
+# 3. Evaluate JavaScript in the active tab (or specific --tab-id)
+./mcp-server/target/release/chromapilot eval "document.title"
+./mcp-server/target/release/chromapilot eval "window.location.href" --tab-id 1612870623
+
+# 4. Execute a batch browser pipeline from JSON string or file
+./mcp-server/target/release/chromapilot pipeline '[{"action":"click","text":"Log In"}]'
+
+# 5. Check daemon health or stop it
+./mcp-server/target/release/chromapilot status
+./mcp-server/target/release/chromapilot stop
+```
+
+All CLI subcommands automatically connect to the active daemon over high-speed IPC Unix socket/TCP, auto-spawn the background daemon if needed, share tab locks with AI agents, and enforce token sanitization in the Rust layer!
 
 ---
 

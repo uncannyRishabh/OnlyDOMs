@@ -26,6 +26,7 @@ REGISTER_ALL=false
 REGISTER_CLAUDE=false
 REGISTER_WINDSURF=false
 REGISTER_ANTIGRAVITY=false
+REGISTER_INTELLIJ=false
 AUTO_INSTALL_RUST=false
 WRITE_WORKSPACE_CONFIG=true
 
@@ -38,12 +39,14 @@ Usage:
 
 Options:
   -i, --install, --register-all   Auto-build and register ChromaPilot with all detected
-                                  MCP clients (Claude Desktop, Windsurf, Antigravity, Claude Code CLI).
+                                  MCP clients (VS Code, Cursor, Windsurf, IntelliJ IDEA / JetBrains,
+                                  Claude Desktop, Antigravity, Claude Code CLI).
   --register-claude               Register with Claude Desktop config.
   --register-windsurf             Register with Windsurf MCP config.
   --register-antigravity          Register with Antigravity / Gemini CLI config.
+  --register-intellij             Register with JetBrains / IntelliJ IDEA MCP config.
   --auto-install-rust             Attempt to install Rust/Cargo via rustup if not present.
-  --no-workspace-config           Skip generating project-level .cursor/mcp.json and .vscode/mcp.json.
+  --no-workspace-config           Skip generating project-level workspace configs (.cursor, .vscode, .idea, .windsurf).
   -p, --port <PORT>               Specify default port for MCP server (default: 9222).
   -h, --help                      Show this help message.
 
@@ -66,6 +69,7 @@ while [[ $# -gt 0 ]]; do
             REGISTER_CLAUDE=true
             REGISTER_WINDSURF=true
             REGISTER_ANTIGRAVITY=true
+            REGISTER_INTELLIJ=true
             shift
             ;;
         --register-claude)
@@ -78,6 +82,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --register-antigravity)
             REGISTER_ANTIGRAVITY=true
+            shift
+            ;;
+        --register-intellij)
+            REGISTER_INTELLIJ=true
             shift
             ;;
         --auto-install-rust)
@@ -176,7 +184,7 @@ fi
 
 echo -e "  ${GREEN}✔${NC} Built binary: ${BINARY_PATH}"
 
-# 4. Workspace MCP Configs (.cursor/mcp.json and .vscode/mcp.json)
+# 4. Workspace MCP Configs (.cursor, .vscode, .idea, .windsurf)
 if [ "$WRITE_WORKSPACE_CONFIG" = true ]; then
     echo -e "\n${BLUE}▶ Writing project workspace MCP configurations...${NC}"
     
@@ -205,6 +213,32 @@ EOF
 }
 EOF
     echo -e "  ${GREEN}✔${NC} Project config created: .vscode/mcp.json (VS Code / Cline / Roo Code)"
+
+    mkdir -p "$REPO_DIR/.idea"
+    cat > "$REPO_DIR/.idea/mcp.json" <<EOF
+{
+  "mcpServers": {
+    "chromapilot": {
+      "command": "${BINARY_PATH}",
+      "args": ["--port", "${PORT}"]
+    }
+  }
+}
+EOF
+    echo -e "  ${GREEN}✔${NC} Project config created: .idea/mcp.json (JetBrains IntelliJ IDEA / PyCharm / WebStorm)"
+
+    mkdir -p "$REPO_DIR/.windsurf"
+    cat > "$REPO_DIR/.windsurf/mcp.json" <<EOF
+{
+  "mcpServers": {
+    "chromapilot": {
+      "command": "${BINARY_PATH}",
+      "args": ["--port", "${PORT}"]
+    }
+  }
+}
+EOF
+    echo -e "  ${GREEN}✔${NC} Project config created: .windsurf/mcp.json (Windsurf project config)"
 fi
 
 # 5. Client Auto-Registration (Claude Desktop, Windsurf, Antigravity, Claude Code CLI)
@@ -295,6 +329,21 @@ if [ "$REGISTER_ANTIGRAVITY" = true ]; then
     fi
 fi
 
+if [ "$REGISTER_INTELLIJ" = true ]; then
+    echo -e "\n${BLUE}▶ Registering with JetBrains / IntelliJ IDEA...${NC}"
+    INTELLIJ_CONFIG=""
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        INTELLIJ_CONFIG="$HOME/Library/Application Support/JetBrains/mcp.json"
+    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        INTELLIJ_CONFIG="$HOME/.config/JetBrains/mcp.json"
+    elif [[ "$OSTYPE" == "msys"* || "$OSTYPE" == "win32"* ]]; then
+        INTELLIJ_CONFIG="$APPDATA/JetBrains/mcp.json"
+    fi
+    if [ -n "$INTELLIJ_CONFIG" ]; then
+        register_mcp_config "JetBrains / IntelliJ IDEA" "$INTELLIJ_CONFIG"
+    fi
+fi
+
 # Claude Code CLI registration
 if [ "$REGISTER_ALL" = true ] && command -v claude &> /dev/null; then
     echo -e "\n${BLUE}▶ Registering with Claude Code CLI...${NC}"
@@ -302,6 +351,20 @@ if [ "$REGISTER_ALL" = true ] && command -v claude &> /dev/null; then
         echo -e "  ${GREEN}✔${NC} Registered with Claude Code CLI (claude mcp add)"
     else
         echo -e "  ${YELLOW}ℹ${NC} Note: claude mcp add exited with non-zero status or was already registered"
+    fi
+fi
+
+# VS Code Cline Extension (if installed)
+if [ "$REGISTER_ALL" = true ]; then
+    CLINE_CONFIG=""
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        CLINE_CONFIG="$HOME/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json"
+    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        CLINE_CONFIG="$HOME/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json"
+    fi
+    if [ -n "$CLINE_CONFIG" ] && [ -d "$(dirname "$CLINE_CONFIG")" ]; then
+        echo -e "\n${BLUE}▶ Registering with VS Code Cline...${NC}"
+        register_mcp_config "VS Code (Cline)" "$CLINE_CONFIG"
     fi
 fi
 

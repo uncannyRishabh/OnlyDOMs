@@ -2,8 +2,17 @@ use crate::websocket_hub::{SharedHub, send_cdp_command, send_hub_command};
 use serde_json::Value;
 use std::time::{Duration, Instant};
 
-pub async fn execute_browser_pipeline(state: SharedHub, params: Value) -> Result<Value, String> {
-    let steps = params.get("steps").and_then(|s| s.as_array()).cloned().unwrap_or_default();
+pub async fn execute_browser_pipeline(
+    state: SharedHub,
+    mut current_tab: Option<u64>,
+    params: Value,
+) -> Result<Value, String> {
+    let steps_opt = params.get("steps").or_else(|| params.get("actions")).and_then(|s| s.as_array());
+    let steps = match steps_opt {
+        Some(arr) if !arr.is_empty() => arr.clone(),
+        Some(_) => return Err("The 'steps' array is empty. Please provide at least one action.".to_string()),
+        None => return Err("Missing required property 'steps' (or 'actions') array in execute_browser_pipeline.".to_string()),
+    };
     let mut final_url = String::new();
     let mut screenshot = None;
     let mut step_results = Vec::new();
@@ -13,23 +22,34 @@ pub async fn execute_browser_pipeline(state: SharedHub, params: Value) -> Result
         match action {
             "navigate" => {
                 let url = step.get("url").and_then(|v| v.as_str()).unwrap_or("");
-                send_cdp_command(state.clone(), "Page.navigate", serde_json::json!({
+                let cdp_res = send_cdp_command(state.clone(), current_tab, "Page.navigate", serde_json::json!({
                     "url": url
-                })).await?;
+                })).await;
+                if cdp_res.is_err() {
+                    if let Some(tid) = current_tab {
+                        send_hub_command(state.clone(), Some(tid), "NAVIGATE_TAB", "", serde_json::json!({ "tabId": tid, "url": url })).await?;
+                    } else {
+                        cdp_res?;
+                    }
+                }
                 
                 // Resilient wait for frame/load
-                tokio::time::sleep(Duration::from_millis(300)).await;
+                tokio::time::sleep(Duration::from_millis(500)).await;
                 step_results.push(serde_json::json!({ "step": idx, "action": "navigate", "status": "ok" }));
             }
             "new_tab" => {
                 let url = step.get("url").and_then(|v| v.as_str()).unwrap_or("about:blank");
-                let res = send_hub_command(state.clone(), "CREATE_TAB", "", serde_json::json!({ "url": url })).await?;
+                let res = send_hub_command(state.clone(), None, "CREATE_TAB", "", serde_json::json!({ "url": url })).await?;
+                if let Some(new_tid) = res.get("tabId").and_then(|v| v.as_u64()) {
+                    current_tab = Some(new_tid);
+                }
                 tokio::time::sleep(Duration::from_millis(300)).await;
                 step_results.push(serde_json::json!({ "step": idx, "action": "new_tab", "status": "ok", "result": res }));
             }
             "switch_tab" => {
                 let tab_id = step.get("tab_id").and_then(|v| v.as_u64()).unwrap_or(0);
-                let res = send_hub_command(state.clone(), "SWITCH_TAB", "", serde_json::json!({ "tabId": tab_id })).await?;
+                let res = send_hub_command(state.clone(), Some(tab_id), "SWITCH_TAB", "", serde_json::json!({ "tabId": tab_id })).await?;
+                current_tab = Some(tab_id);
                 step_results.push(serde_json::json!({ "step": idx, "action": "switch_tab", "status": "ok", "result": res }));
             }
             "wait_for" => {
@@ -43,7 +63,7 @@ pub async fn execute_browser_pipeline(state: SharedHub, params: Value) -> Result
                         "(() => {{ const el = document.querySelector('{}'); return !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length)); }})()",
                         selector.replace('\'', "\\'")
                     );
-                    if let Ok(val) = send_cdp_command(state.clone(), "Runtime.evaluate", serde_json::json!({
+                    if let Ok(val) = send_cdp_command(state.clone(), current_tab, "Runtime.evaluate", serde_json::json!({
                         "expression": expr,
                         "returnByValue": true
                     })).await {
@@ -66,7 +86,7 @@ pub async fn execute_browser_pipeline(state: SharedHub, params: Value) -> Result
                 let mut satisfied = false;
 
                 while start.elapsed().as_millis() as u64 <= timeout_ms {
-                    if let Ok(val) = send_cdp_command(state.clone(), "Runtime.evaluate", serde_json::json!({
+                    if let Ok(val) = send_cdp_command(state.clone(), current_tab, "Runtime.evaluate", serde_json::json!({
                         "expression": expr,
                         "returnByValue": true,
                         "awaitPromise": true
@@ -87,7 +107,7 @@ pub async fn execute_browser_pipeline(state: SharedHub, params: Value) -> Result
                 let timeout_ms = step.get("timeout_ms").and_then(|v| v.as_u64()).unwrap_or(5000);
                 let start = Instant::now();
                 while start.elapsed().as_millis() as u64 <= timeout_ms {
-                    let res = send_cdp_command(state.clone(), "Runtime.evaluate", serde_json::json!({
+                    let res = send_cdp_command(state.clone(), current_tab, "Runtime.evaluate", serde_json::json!({
                         "expression": "performance.getEntriesByType('resource').filter(e => !e.responseEnd).length === 0",
                         "returnByValue": true
                     })).await;
@@ -153,7 +173,7 @@ pub async fn execute_browser_pipeline(state: SharedHub, params: Value) -> Result
                         text.replace('\'', "\\'"),
                         aria_label.replace('\'', "\\'")
                     );
-                    if let Ok(val) = send_cdp_command(state.clone(), "Runtime.evaluate", serde_json::json!({
+                    if let Ok(val) = send_cdp_command(state.clone(), current_tab, "Runtime.evaluate", serde_json::json!({
                         "expression": click_expr,
                         "returnByValue": true
                     })).await {
@@ -213,7 +233,7 @@ pub async fn execute_browser_pipeline(state: SharedHub, params: Value) -> Result
                     delta_x, delta_y
                 );
 
-                let res = send_cdp_command(state.clone(), "Runtime.evaluate", serde_json::json!({
+                let res = send_cdp_command(state.clone(), current_tab, "Runtime.evaluate", serde_json::json!({
                     "expression": scroll_expr,
                     "returnByValue": true
                 })).await;
@@ -231,12 +251,13 @@ pub async fn execute_browser_pipeline(state: SharedHub, params: Value) -> Result
             }
             "evaluate" => {
                 let expr = step.get("expression").and_then(|v| v.as_str()).unwrap_or("");
-                let res = send_cdp_command(state.clone(), "Runtime.evaluate", serde_json::json!({
+                let res = send_cdp_command(state.clone(), current_tab, "Runtime.evaluate", serde_json::json!({
                     "expression": expr,
                     "returnByValue": true,
                     "awaitPromise": true
                 })).await?;
-                let val = res.get("result").and_then(|r| r.get("value")).cloned().unwrap_or(Value::Null);
+                let mut val = res.get("result").and_then(|r| r.get("value")).cloned().unwrap_or(Value::Null);
+                crate::tools::debugger::optimize_evaluate_value(&mut val, false);
                 step_results.push(serde_json::json!({
                     "step": idx,
                     "action": "evaluate",
@@ -255,13 +276,13 @@ pub async fn execute_browser_pipeline(state: SharedHub, params: Value) -> Result
                     "ArrowDown" => 40,
                     _ => 0,
                 };
-                send_cdp_command(state.clone(), "Input.dispatchKeyEvent", serde_json::json!({
+                send_cdp_command(state.clone(), current_tab, "Input.dispatchKeyEvent", serde_json::json!({
                     "type": "rawKeyDown",
                     "key": key,
                     "code": code,
                     "windowsVirtualKeyCode": windows_virtual_key_code
                 })).await?;
-                send_cdp_command(state.clone(), "Input.dispatchKeyEvent", serde_json::json!({
+                send_cdp_command(state.clone(), current_tab, "Input.dispatchKeyEvent", serde_json::json!({
                     "type": "keyUp",
                     "key": key,
                     "code": code,
@@ -276,7 +297,7 @@ pub async fn execute_browser_pipeline(state: SharedHub, params: Value) -> Result
             }
             "fill_inputs" => {
                 let fields = step.get("fields").cloned().unwrap_or(serde_json::json!([]));
-                crate::tools::input::fill_inputs(state.clone(), serde_json::json!({ "fields": fields })).await?;
+                crate::tools::input::fill_inputs(state.clone(), current_tab, serde_json::json!({ "fields": fields })).await?;
                 step_results.push(serde_json::json!({ "step": idx, "action": "fill_inputs", "status": "ok" }));
             }
             "take_screenshot" => {
@@ -295,7 +316,7 @@ pub async fn execute_browser_pipeline(state: SharedHub, params: Value) -> Result
                 if let Some(sp) = save_path {
                     params["save_path"] = serde_json::json!(sp);
                 }
-                if let Ok(res) = crate::tools::visual::take_screenshot(state.clone(), params).await {
+                if let Ok(res) = crate::tools::visual::take_screenshot(state.clone(), current_tab, params).await {
                     if let Some(b64) = res.get("base64_image").and_then(|v| v.as_str()) {
                         screenshot = Some(b64.to_string());
                     }
@@ -304,7 +325,7 @@ pub async fn execute_browser_pipeline(state: SharedHub, params: Value) -> Result
             }
             "capture_grid_screenshot" => {
                 let quality = step.get("quality").and_then(|v| v.as_u64()).unwrap_or(80) as u32;
-                if let Ok(res) = crate::tools::visual::take_screenshot(state.clone(), serde_json::json!({
+                if let Ok(res) = crate::tools::visual::take_screenshot(state.clone(), current_tab, serde_json::json!({
                     "full_page": false,
                     "format": "webp",
                     "quality": quality,
@@ -318,7 +339,7 @@ pub async fn execute_browser_pipeline(state: SharedHub, params: Value) -> Result
         }
     }
     
-    let res = send_cdp_command(state.clone(), "Runtime.evaluate", serde_json::json!({
+    let res = send_cdp_command(state.clone(), current_tab, "Runtime.evaluate", serde_json::json!({
         "expression": "window.location.href",
         "returnByValue": true
     })).await;

@@ -6,19 +6,24 @@ use futures_util::{StreamExt, SinkExt};
 use serde_json::Value;
 use tracing::{info, warn, error};
 use std::time::Duration;
+use crate::tab_registry::TabRegistry;
 
 pub struct HubState {
     pub tx: Option<mpsc::Sender<Value>>,
+    pub conn_token: u64,
     pub pending: HashMap<String, oneshot::Sender<Value>>,
     pub active_port: u16,
+    pub tab_registry: TabRegistry,
 }
 
 impl HubState {
     pub fn new() -> Self {
         Self {
             tx: None,
+            conn_token: 0,
             pending: HashMap::new(),
             active_port: 9222,
+            tab_registry: TabRegistry::new(),
         }
     }
 }
@@ -80,11 +85,12 @@ pub async fn start_hub(initial_port: u16, state: SharedHub) {
                 let (mut write, mut read) = ws_stream.split();
                 
                 let (tx, mut rx) = mpsc::channel::<Value>(100);
-                
-                {
+                let current_token = {
                     let mut lock = state_clone.lock().await;
-                    lock.tx = Some(tx);
-                }
+                    lock.conn_token = lock.conn_token.wrapping_add(1);
+                    lock.tx = Some(tx.clone());
+                    lock.conn_token
+                };
 
                 let state_for_read = state_clone.clone();
 
@@ -97,10 +103,24 @@ pub async fn start_hub(initial_port: u16, state: SharedHub) {
                     }
                 });
 
+                // Keepalive heartbeat ping task every 15s to keep Chrome MV3 service worker alive
+                let ping_tx = tx.clone();
+                let ping_task = tokio::spawn(async move {
+                    loop {
+                        tokio::time::sleep(Duration::from_secs(15)).await;
+                        if ping_tx.send(serde_json::json!({"type": "PING", "id": "keepalive"})).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+
                 while let Some(Ok(msg)) = read.next().await {
                     if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
                         if let Ok(val) = serde_json::from_str::<Value>(&text) {
                             if let Some(id) = val.get("id").and_then(|id| id.as_str()) {
+                                if id == "keepalive" {
+                                    continue;
+                                }
                                 let mut lock = state_for_read.lock().await;
                                 if let Some(sender) = lock.pending.remove(id) {
                                     let _ = sender.send(val);
@@ -117,16 +137,27 @@ pub async fn start_hub(initial_port: u16, state: SharedHub) {
                 
                 {
                     let mut lock = state_clone.lock().await;
-                    lock.tx = None;
-                    lock.pending.clear();
+                    // Only clear if this connection is still the active one
+                    if lock.conn_token == current_token {
+                        lock.tx = None;
+                        lock.pending.clear();
+                    }
                 }
                 write_task.abort();
+                ping_task.abort();
+                info!("Extension connection closed (token {})", current_token);
             }
         });
     }
 }
 
-pub async fn send_hub_command(state: SharedHub, cmd_type: &str, method: &str, params: Value) -> Result<Value, String> {
+pub async fn send_hub_command(
+    state: SharedHub,
+    tab_id: Option<u64>,
+    cmd_type: &str,
+    method: &str,
+    params: Value,
+) -> Result<Value, String> {
     // Wait briefly if extension is reconnecting or server was just started
     let mut lock = state.lock().await;
     let mut wait_count = 0;
@@ -151,6 +182,10 @@ pub async fn send_hub_command(state: SharedHub, cmd_type: &str, method: &str, pa
         "id": id,
     });
     
+    if let Some(tid) = tab_id {
+        msg.as_object_mut().unwrap().insert("tabId".to_string(), Value::Number(tid.into()));
+    }
+
     if cmd_type == "CDP_CMD" {
         msg.as_object_mut().unwrap().insert("method".to_string(), Value::String(method.to_string()));
         msg.as_object_mut().unwrap().insert("params".to_string(), params);
@@ -183,6 +218,11 @@ pub async fn send_hub_command(state: SharedHub, cmd_type: &str, method: &str, pa
     }
 }
 
-pub async fn send_cdp_command(state: SharedHub, method: &str, params: Value) -> Result<Value, String> {
-    send_hub_command(state, "CDP_CMD", method, params).await
+pub async fn send_cdp_command(
+    state: SharedHub,
+    tab_id: Option<u64>,
+    method: &str,
+    params: Value,
+) -> Result<Value, String> {
+    send_hub_command(state, tab_id, "CDP_CMD", method, params).await
 }

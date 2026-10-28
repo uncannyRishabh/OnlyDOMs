@@ -1,440 +1,389 @@
 #![recursion_limit = "512"]
 
-mod mcp_protocol;
-mod websocket_hub;
-mod tools;
+use chromapilot::{mcp_protocol, websocket_hub, daemon};
 
-use clap::Parser;
-use tokio::io::{self, AsyncBufReadExt, BufReader};
-use tracing::{info, error};
+use clap::{Parser, Subcommand};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tracing::warn;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use serde_json::Value;
+use std::path::Path;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-    #[arg(short, long, default_value_t = 9222)]
+#[command(author, version, about = "ChromaPilot MCP Server & Daemon", long_about = None)]
+struct Cli {
+    #[arg(short, long, default_value_t = 9222, global = true)]
     port: u16,
+
+    #[arg(long, default_value_t = 9220, global = true)]
+    ipc_port: u16,
+
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Start the persistent background daemon
+    Daemon,
+    /// Query the status of the running daemon
+    Status,
+    /// Stop the running daemon
+    Stop,
+    /// Open a URL in a new browser tab and attach to it
+    Open {
+        /// Target URL (e.g. https://www.instagram.com)
+        url: String,
+    },
+    /// List open browser tabs with IDs, titles, and cleaned URLs
+    Tabs {
+        /// Return detailed raw Chromium properties
+        #[arg(long, default_value_t = false)]
+        detailed: bool,
+    },
+    /// Evaluate JavaScript expression in active or specified tab
+    Eval {
+        /// JavaScript expression to evaluate
+        expression: String,
+        /// Target tab ID (defaults to active/assigned tab)
+        #[arg(long)]
+        tab_id: Option<u64>,
+    },
+    /// Execute a multi-step browser pipeline from JSON string or file
+    Pipeline {
+        /// JSON array of steps or path to a JSON pipeline file
+        steps: String,
+        /// Target tab ID (defaults to active/assigned tab)
+        #[arg(long)]
+        tab_id: Option<u64>,
+    },
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .init();
-    let args = Args::parse();
-    
-    info!("ChromaPilot MCP Server starting...");
 
+    let cli = Cli::parse();
+
+    match cli.command {
+        Some(Commands::Daemon) => {
+            daemon::run_daemon(cli.port, cli.ipc_port).await?;
+        }
+        Some(Commands::Status) => {
+            query_status(cli.ipc_port).await?;
+        }
+        Some(Commands::Stop) => {
+            send_control_cmd(cli.ipc_port, "STOP").await?;
+            println!("ChromaPilot daemon stopped.");
+        }
+        Some(Commands::Open { url }) => {
+            ensure_daemon_running(cli.port, cli.ipc_port).await?;
+            let res = send_mcp_cmd(cli.ipc_port, "create_tab", serde_json::json!({ "url": url })).await?;
+            let text = extract_mcp_text(&res)?;
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(tab_id) = parsed.get("tabId").and_then(|v| v.as_u64()) {
+                    println!("Opened tab: ID {} ({})", tab_id, url);
+                } else {
+                    println!("{}", serde_json::to_string_pretty(&parsed)?);
+                }
+            } else {
+                println!("{}", text);
+            }
+        }
+        Some(Commands::Tabs { detailed }) => {
+            ensure_daemon_running(cli.port, cli.ipc_port).await?;
+            let res = send_mcp_cmd(cli.ipc_port, "list_browser_sessions", serde_json::json!({ "detailed": detailed })).await?;
+            let text = extract_mcp_text(&res)?;
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(tabs) = parsed.get("tabs").and_then(|t| t.as_array()) {
+                    println!("{:<12} {:<8} {:<42} {}", "TAB ID", "ACTIVE", "TITLE", "URL");
+                    println!("{:-<12} {:-<8} {:-<42} {:-<35}", "", "", "", "");
+                    for tab in tabs {
+                        let id = tab.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let active = if tab.get("active").and_then(|v| v.as_bool()).unwrap_or(false) { "● YES" } else { "  no" };
+                        let title = tab.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                        let truncated_title = if title.chars().count() > 40 {
+                            format!("{}...", title.chars().take(37).collect::<String>())
+                        } else {
+                            title.to_string()
+                        };
+                        let url = tab.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                        println!("{:<12} {:<8} {:<42} {}", id, active, truncated_title, url);
+                    }
+                } else {
+                    println!("{}", serde_json::to_string_pretty(&parsed)?);
+                }
+            } else {
+                println!("{}", text);
+            }
+        }
+        Some(Commands::Eval { expression, tab_id }) => {
+            ensure_daemon_running(cli.port, cli.ipc_port).await?;
+            let mut args = serde_json::json!({ "expression": expression });
+            if let Some(tid) = tab_id {
+                args.as_object_mut().unwrap().insert("tab_id".to_string(), serde_json::json!(tid));
+            }
+            let res = send_mcp_cmd(cli.ipc_port, "evaluate_expression", args).await?;
+            let text = extract_mcp_text(&res)?;
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(val) = parsed.get("result").and_then(|r| r.get("value")) {
+                    if let Some(s) = val.as_str() {
+                        println!("{}", s);
+                    } else {
+                        println!("{}", serde_json::to_string_pretty(val)?);
+                    }
+                } else {
+                    println!("{}", serde_json::to_string_pretty(&parsed)?);
+                }
+            } else {
+                println!("{}", text);
+            }
+        }
+        Some(Commands::Pipeline { steps, tab_id }) => {
+            ensure_daemon_running(cli.port, cli.ipc_port).await?;
+            let raw_steps = if Path::new(&steps).exists() {
+                tokio::fs::read_to_string(&steps).await?
+            } else {
+                steps
+            };
+            let parsed_steps: serde_json::Value = serde_json::from_str(&raw_steps)
+                .map_err(|e| format!("Invalid JSON steps in pipeline: {}", e))?;
+
+            let mut args = if parsed_steps.is_array() {
+                serde_json::json!({ "steps": parsed_steps })
+            } else {
+                parsed_steps
+            };
+            if let Some(tid) = tab_id {
+                args.as_object_mut().unwrap().insert("tab_id".to_string(), serde_json::json!(tid));
+            }
+            let res = send_mcp_cmd(cli.ipc_port, "execute_browser_pipeline", args).await?;
+            let text = extract_mcp_text(&res)?;
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
+                println!("{}", serde_json::to_string_pretty(&parsed)?);
+            } else {
+                println!("{}", text);
+            }
+        }
+        None => {
+            // Default MCP entrypoint: run as lightweight proxy, auto-starting daemon if needed
+            run_proxy(cli.port, cli.ipc_port).await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn ensure_daemon_running(ws_port: u16, tcp_ipc_port: u16) -> Result<(), Box<dyn std::error::Error>> {
+    if !daemon::is_daemon_running().await {
+        if let Ok(exe) = std::env::current_exe() {
+            let _ = std::process::Command::new(exe)
+                .arg("daemon")
+                .arg("--port")
+                .arg(ws_port.to_string())
+                .arg("--ipc-port")
+                .arg(tcp_ipc_port.to_string())
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        }
+
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_millis(2500) {
+            if daemon::is_daemon_running().await {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+    Ok(())
+}
+
+fn extract_mcp_text(res: &serde_json::Value) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(err) = res.get("error") {
+        let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or("Unknown error");
+        return Err(format!("ChromaPilot error: {}", msg).into());
+    }
+    if let Some(content) = res.get("result").and_then(|r| r.get("content")).and_then(|c| c.as_array()) {
+        if let Some(first) = content.first() {
+            if let Some(text) = first.get("text").and_then(|t| t.as_str()) {
+                return Ok(text.to_string());
+            }
+        }
+    }
+    Ok(serde_json::to_string(res)?)
+}
+
+async fn send_mcp_cmd(tcp_ipc_port: u16, tool_name: &str, arguments: serde_json::Value) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let req = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": "cli_cmd",
+        "method": "tools/call",
+        "params": {
+            "name": tool_name,
+            "arguments": arguments
+        }
+    });
+    let req_str = req.to_string();
+
+    #[cfg(unix)]
+    if Path::new(daemon::UNIX_SOCKET_PATH).exists() {
+        if let Ok(mut stream) = tokio::net::UnixStream::connect(daemon::UNIX_SOCKET_PATH).await {
+            stream.write_all(format!("{}\n", req_str).as_bytes()).await?;
+            stream.flush().await?;
+            let mut reader = BufReader::new(stream).lines();
+            if let Ok(Some(line)) = reader.next_line().await {
+                let val: serde_json::Value = serde_json::from_str(&line)?;
+                return Ok(val);
+            }
+        }
+    }
+
+    let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", tcp_ipc_port)).await
+        .map_err(|_| "ChromaPilot daemon is not running. Please start it with 'chromapilot daemon --port 9222'")?;
+    stream.write_all(format!("{}\n", req_str).as_bytes()).await?;
+    stream.flush().await?;
+    let mut reader = BufReader::new(stream).lines();
+    if let Ok(Some(line)) = reader.next_line().await {
+        let val: serde_json::Value = serde_json::from_str(&line)?;
+        return Ok(val);
+    }
+
+    Err("No response from ChromaPilot daemon.".into())
+}
+
+async fn run_proxy(ws_port: u16, tcp_ipc_port: u16) -> Result<(), Box<dyn std::error::Error>> {
+    // 1. If daemon is not running, attempt auto-spawn
+    let _ = ensure_daemon_running(ws_port, tcp_ipc_port).await;
+
+    // 2. Connect to daemon via Unix domain socket
+    #[cfg(unix)]
+    {
+        if Path::new(daemon::UNIX_SOCKET_PATH).exists() {
+            if let Ok(stream) = tokio::net::UnixStream::connect(daemon::UNIX_SOCKET_PATH).await {
+                proxy_stream(stream).await;
+                return Ok(());
+            }
+        }
+    }
+
+    // Fallback: connect via TCP IPC
+    if let Ok(stream) = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", tcp_ipc_port)).await {
+        proxy_stream(stream).await;
+        return Ok(());
+    }
+
+    // 3. Last-resort fallback: in-process execution (e.g. strict sandbox preventing detached subprocesses)
+    warn!("ChromaPilot daemon could not be reached or auto-spawned; falling back to in-process mode.");
+    run_in_process_fallback(ws_port).await
+}
+
+async fn proxy_stream<S>(stream: S)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 'static,
+{
+    let (sock_read, mut sock_write) = tokio::io::split(stream);
+
+    let mut stdin_reader = BufReader::new(tokio::io::stdin()).lines();
+    let mut sock_reader = BufReader::new(sock_read).lines();
+    let mut stdout = tokio::io::stdout();
+
+    let client_to_daemon = tokio::spawn(async move {
+        while let Ok(Some(line)) = stdin_reader.next_line().await {
+            if sock_write.write_all(line.as_bytes()).await.is_err() {
+                break;
+            }
+            if sock_write.write_all(b"\n").await.is_err() {
+                break;
+            }
+            if sock_write.flush().await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let daemon_to_client = tokio::spawn(async move {
+        while let Ok(Some(line)) = sock_reader.next_line().await {
+            if stdout.write_all(line.as_bytes()).await.is_err() {
+                break;
+            }
+            if stdout.write_all(b"\n").await.is_err() {
+                break;
+            }
+            if stdout.flush().await.is_err() {
+                break;
+            }
+        }
+    });
+
+    tokio::select! {
+        _ = client_to_daemon => {},
+        _ = daemon_to_client => {},
+    }
+}
+
+async fn run_in_process_fallback(ws_port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(Mutex::new(websocket_hub::HubState::new()));
     let state_for_hub = state.clone();
 
-    // Start WebSocket Hub in background
-    let _addr = format!("127.0.0.1:{}", args.port);
     tokio::spawn(async move {
-        websocket_hub::start_hub(args.port, state_for_hub).await;
+        websocket_hub::start_hub(ws_port, state_for_hub).await;
     });
 
-    let stdin = io::stdin();
+    let client_id = "in_process_client".to_string();
+    let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin).lines();
+    let mut stdout = tokio::io::stdout();
 
     while let Ok(Some(line)) = reader.next_line().await {
-        match serde_json::from_str::<mcp_protocol::McpRequest>(&line) {
-            Ok(req) => {
-                info!("Received MCP request: {:?}", req);
-                
-                let mut result_value = None;
-                let mut error_val = None;
-
-                let res_result: Result<Value, String> = match req.method.as_str() {
-                    "initialize" => {
-                        Ok(serde_json::json!({
-                            "protocolVersion": "2024-11-05",
-                            "capabilities": {
-                                "tools": {}
-                            },
-                            "serverInfo": {
-                                "name": "ChromaPilot",
-                                "version": "1.0.0"
-                            },
-                            "instructions": "⚠️ USER DISCRETIONARY WARNING: This agent possesses capabilities to actively inspect, navigate, execute arbitrary JavaScript, manipulate the DOM, and control your active browser session. It can view sensitive information on open pages. Use strictly in trusted environments and operate responsibly."
-                        }))
-                    }
-                    "notifications/initialized" => {
-                        Ok(serde_json::json!({}))
-                    }
-                    "tools/list" => {
-                        Ok(serde_json::json!({
-                            "tools": [
-                                {
-                                    "name": "list_browser_sessions",
-                                    "description": "List open browser tabs across Chrome windows in a compact, token-efficient format",
-                                    "inputSchema": {
-                                        "type": "object",
-                                        "properties": {
-                                            "detailed": { "type": "boolean", "description": "Whether to return full Chromium tab properties (default false)" }
-                                        }
-                                    }
-                                },
-                                {
-                                    "name": "create_tab",
-                                    "description": "Open a new browser tab with optional URL and immediately attach to it",
-                                    "inputSchema": {
-                                        "type": "object",
-                                        "properties": {
-                                            "url": { "type": "string", "description": "URL to open in the new tab" }
-                                        }
-                                    }
-                                },
-                                {
-                                    "name": "switch_tab",
-                                    "description": "Switch active tab in Chrome",
-                                    "inputSchema": {
-                                        "type": "object",
-                                        "properties": {
-                                            "tab_id": { "type": "number", "description": "Numeric ID of the tab" }
-                                        },
-                                        "required": ["tab_id"]
-                                    }
-                                },
-                                {
-                                    "name": "close_tab",
-                                    "description": "Close a specific browser tab",
-                                    "inputSchema": {
-                                        "type": "object",
-                                        "properties": {
-                                            "tab_id": { "type": "number", "description": "Numeric ID of the tab to close" }
-                                        },
-                                        "required": ["tab_id"]
-                                    }
-                                },
-                                {
-                                    "name": "select_session",
-                                    "description": "Select or switch debugger focus to a specific tab by ID",
-                                    "inputSchema": {
-                                        "type": "object",
-                                        "properties": {
-                                            "session_id": { "type": "string", "description": "Numeric Chrome tab ID" }
-                                        },
-                                        "required": ["session_id"]
-                                    }
-                                },
-                                {
-                                    "name": "capture_viewport",
-                                    "description": "Capture a clean screenshot of the current page viewport (excludes DevTools/browser infobars)",
-                                    "inputSchema": {
-                                        "type": "object",
-                                        "properties": {
-                                            "format": { "type": "string", "enum": ["png", "webp", "jpeg"], "description": "Image format (default: webp)" },
-                                            "quality": { "type": "number", "description": "Image quality 0-100 (for webp/jpeg)" }
-                                        }
-                                    }
-                                },
-                                {
-                                    "name": "take_screenshot",
-                                    "description": "Capture a clean screenshot of the web page (viewport or full scrollable page). Saves to disk if save_path is provided to avoid context token consumption.",
-                                    "inputSchema": {
-                                        "type": "object",
-                                        "properties": {
-                                            "full_page": { "type": "boolean", "description": "Capture entire scrollable page height instead of just viewport (default: false)" },
-                                            "format": { "type": "string", "enum": ["png", "webp", "jpeg"], "description": "Image format (default: png)" },
-                                            "quality": { "type": "number", "description": "Image quality 0-100 for webp/jpeg" },
-                                            "save_path": { "type": "string", "description": "Optional file path to save binary image directly on disk" },
-                                            "include_base64": { "type": "boolean", "description": "Include base64 image data in response (default: true if save_path not set, false if save_path is set)" }
-                                        }
-                                    }
-                                },
-                                {
-                                    "name": "run_browser_test",
-                                    "description": "Automated browser testing engine. Decomposes high-level defect or feature descriptions into executable steps, executes them with visual capture at each step, validates assertions, and produces markdown summaries and JSON reports in dedicated test folders.",
-                                    "inputSchema": {
-                                        "type": "object",
-                                        "properties": {
-                                            "test_name": { "type": "string", "description": "Name or identifier for the test (e.g. 'checkout_coupon_error')" },
-                                            "description": { "type": "string", "description": "Detailed defect or feature description to validate. If steps are not provided, this is automatically decomposed into executable steps." },
-                                            "output_dir": { "type": "string", "description": "Custom directory to save test reports and step screenshots (default: test_reports/<test_name>_<timestamp>)" },
-                                            "full_page_screenshots": { "type": "boolean", "description": "Capture full scrollable page for step screenshots (default: false)" },
-                                            "continue_on_failure": { "type": "boolean", "description": "Continue executing remaining steps after a step fails (default: false)" },
-                                            "steps": {
-                                                "type": "array",
-                                                "description": "Optional explicit list of test steps. If omitted, steps are parsed from description.",
-                                                "items": {
-                                                    "type": "object",
-                                                    "properties": {
-                                                        "name": { "type": "string", "description": "Human-readable step title" },
-                                                        "action": {
-                                                            "type": "string",
-                                                            "enum": ["navigate", "click", "fill_inputs", "press_key", "scroll", "wait_for", "wait_condition", "wait_network_idle", "evaluate", "sleep", "assert"],
-                                                            "description": "Action type"
-                                                        },
-                                                        "url": { "type": "string" },
-                                                        "selector": { "type": "string" },
-                                                        "text": { "type": "string" },
-                                                        "aria_label": { "type": "string" },
-                                                        "expression": { "type": "string" },
-                                                        "key": { "type": "string" },
-                                                        "screenshot": { "type": "boolean" },
-                                                        "full_page": { "type": "boolean" },
-                                                        "optional": { "type": "boolean" }
-                                                    },
-                                                    "required": ["action"]
-                                                }
-                                            }
-                                        }
-                                    }
-                                },
-                                {
-                                    "name": "execute_browser_pipeline",
-                                    "description": "Execute a batch sequence of resilient browser actions with built-in await, polling, and retry logic",
-                                    "inputSchema": {
-                                        "type": "object",
-                                        "properties": {
-                                            "steps": {
-                                                "type": "array",
-                                                "description": "Ordered actions: navigate, new_tab, switch_tab, wait_for, wait_condition, wait_network_idle, click, scroll, evaluate, fill_inputs, press_key, sleep, take_screenshot, capture_grid_screenshot",
-                                                "items": {
-                                                    "type": "object",
-                                                    "properties": {
-                                                        "action": {
-                                                            "type": "string",
-                                                            "enum": ["navigate", "new_tab", "switch_tab", "wait_for", "wait_condition", "wait_network_idle", "click", "scroll", "evaluate", "fill_inputs", "press_key", "sleep", "take_screenshot", "capture_grid_screenshot"],
-                                                            "description": "Action type"
-                                                        },
-                                                        "url": { "type": "string", "description": "URL for navigate or new_tab" },
-                                                        "tab_id": { "type": "number", "description": "Tab ID for switch_tab" },
-                                                        "selector": { "type": "string", "description": "CSS selector to wait for, click, or scroll" },
-                                                        "text": { "type": "string", "description": "Visible text to target for semantic click" },
-                                                        "aria_label": { "type": "string", "description": "Aria-label to target for semantic click" },
-                                                        "direction": { "type": "string", "enum": ["down", "up"], "description": "Direction for scroll (default: down)" },
-                                                        "delta_y": { "type": "number", "description": "Vertical scroll delta in pixels" },
-                                                        "delta_x": { "type": "number", "description": "Horizontal scroll delta in pixels" },
-                                                        "expression": { "type": "string", "description": "JS boolean expression to await (wait_condition) or expression to execute (evaluate)" },
-                                                        "timeout_ms": { "type": "number", "description": "Timeout in milliseconds" },
-                                                        "wait_after_ms": { "type": "number", "description": "Delay in ms after clicking or scrolling" },
-                                                        "duration_ms": { "type": "number", "description": "Duration for sleep action in ms" },
-                                                        "key": { "type": "string", "description": "Key name for press_key (e.g. Enter, Tab, Escape, ArrowDown)" },
-                                                        "optional": { "type": "boolean", "description": "Do not fail pipeline if this step times out" },
-                                                        "fields": {
-                                                            "type": "array",
-                                                            "description": "Fields for fill_inputs",
-                                                            "items": {
-                                                                "type": "object",
-                                                                "properties": {
-                                                                    "selector": { "type": "string" },
-                                                                    "value": { "type": "string" }
-                                                                },
-                                                                "required": ["selector", "value"]
-                                                            }
-                                                        }
-                                                    },
-                                                    "required": ["action"]
-                                                }
-                                            }
-                                        },
-                                        "required": ["steps"]
-                                    }
-                                },
-                                {
-                                    "name": "fill_inputs",
-                                    "description": "Framework-safe batch form input filling (React, Vue, Angular)",
-                                    "inputSchema": {
-                                        "type": "object",
-                                        "properties": {
-                                            "fields": {
-                                                "type": "array",
-                                                "items": {
-                                                    "type": "object",
-                                                    "properties": {
-                                                        "selector": { "type": "string", "description": "CSS selector for input" },
-                                                        "value": { "type": "string", "description": "Text value to fill" }
-                                                    },
-                                                    "required": ["value"]
-                                                }
-                                            }
-                                        },
-                                        "required": ["fields"]
-                                    }
-                                },
-                                {
-                                    "name": "interact",
-                                    "description": "Interact with the page using normalized coordinates (0.0 to 1.0)",
-                                    "inputSchema": {
-                                        "type": "object",
-                                        "properties": {
-                                            "action": { "type": "string", "enum": ["click", "hover", "scroll"], "description": "Interaction action" },
-                                            "x_ratio": { "type": "number", "description": "X coordinate normalized (0.0 to 1.0)" },
-                                            "y_ratio": { "type": "number", "description": "Y coordinate normalized (0.0 to 1.0)" },
-                                            "deltaX": { "type": "number", "description": "Horizontal scroll delta" },
-                                            "deltaY": { "type": "number", "description": "Vertical scroll delta" }
-                                        },
-                                        "required": ["action"]
-                                    }
-                                },
-                                {
-                                    "name": "evaluate_expression",
-                                    "description": "Evaluate JavaScript in the active tab context via CDP Runtime.evaluate",
-                                    "inputSchema": {
-                                        "type": "object",
-                                        "properties": {
-                                            "expression": { "type": "string", "description": "JavaScript expression to evaluate" }
-                                        },
-                                        "required": ["expression"]
-                                    }
-                                },
-                                {
-                                    "name": "add_breakpoint",
-                                    "description": "Add a debugger breakpoint",
-                                    "inputSchema": { "type": "object", "properties": { "url_regex": { "type": "string" }, "line_number": { "type": "number" } } }
-                                },
-                                {
-                                    "name": "pause_execution",
-                                    "description": "Pause JS execution",
-                                    "inputSchema": { "type": "object", "properties": {} }
-                                },
-                                {
-                                    "name": "resume_execution",
-                                    "description": "Resume JS execution",
-                                    "inputSchema": { "type": "object", "properties": {} }
-                                },
-                                {
-                                    "name": "step_over",
-                                    "description": "Step over in debugger",
-                                    "inputSchema": { "type": "object", "properties": {} }
-                                },
-                                {
-                                    "name": "step_into",
-                                    "description": "Step into in debugger",
-                                    "inputSchema": { "type": "object", "properties": {} }
-                                }
-                            ]
-                        }))
-                    }
-                    "tools/call" => {
-                        let name = req.params.as_ref().and_then(|p| p.get("name")).and_then(|n| n.as_str()).unwrap_or("");
-                        let args = req.params.as_ref().and_then(|p| p.get("arguments")).cloned().unwrap_or(serde_json::json!({}));
-                        
-                        let parse_u64 = |val: Option<&Value>| -> Option<u64> {
-                            val.and_then(|v| {
-                                if let Some(n) = v.as_u64() {
-                                    Some(n)
-                                } else if let Some(s) = v.as_str() {
-                                    s.trim().parse::<u64>().ok()
-                                } else {
-                                    v.as_f64().map(|f| f as u64)
-                                }
-                            })
-                        };
-
-                        match name {
-                            "list_browser_sessions" => { tools::session::list_browser_sessions(state.clone(), args).await }
-                            "create_tab" => {
-                                let url = args.get("url").and_then(|u| u.as_str()).unwrap_or("about:blank");
-                                tools::session::create_tab(state.clone(), url).await
-                            }
-                            "switch_tab" => {
-                                match parse_u64(args.get("tab_id")) {
-                                    Some(id) if id > 0 => tools::session::switch_tab(state.clone(), id).await,
-                                    _ => Err("Missing or invalid tab_id.".to_string()),
-                                }
-                            }
-                            "close_tab" => {
-                                match parse_u64(args.get("tab_id")) {
-                                    Some(id) if id > 0 => tools::session::close_tab(state.clone(), id).await,
-                                    _ => Err("Missing or invalid tab_id.".to_string()),
-                                }
-                            }
-                            "select_session" => {
-                                match parse_u64(args.get("session_id")) {
-                                    Some(id) if id > 0 => tools::session::select_session(state.clone(), id).await,
-                                    _ => Err("Missing or invalid session_id. Please provide a valid tab ID.".to_string()),
-                                }
-                            }
-                            "capture_viewport" => {
-                                tools::visual::capture_viewport(state.clone(), args).await
-                            }
-                            "take_screenshot" => {
-                                tools::visual::take_screenshot(state.clone(), args).await
-                            }
-                            "run_browser_test" => {
-                                tools::testing::run_browser_test(state.clone(), args).await
-                            }
-                            "execute_browser_pipeline" => {
-                                tools::navigation::execute_browser_pipeline(state.clone(), args).await
-                            }
-                            "fill_inputs" => {
-                                tools::input::fill_inputs(state.clone(), args).await
-                            }
-                            "interact" => {
-                                tools::input::interact(state.clone(), args).await
-                            }
-                            "evaluate_expression" => {
-                                tools::debugger::evaluate_expression(state.clone(), args).await
-                            }
-                            "add_breakpoint" => {
-                                tools::debugger::add_breakpoint(state.clone(), args).await
-                            }
-                            "pause_execution" => {
-                                tools::debugger::pause_execution(state.clone()).await
-                            }
-                            "resume_execution" => {
-                                tools::debugger::resume_execution(state.clone()).await
-                            }
-                            "step_over" => {
-                                tools::debugger::step_over(state.clone()).await
-                            }
-                            "step_into" => {
-                                tools::debugger::step_into(state.clone()).await
-                            }
-                            _ => Err(format!("Unknown tool: {}", name)),
-                        }
-                    }
-                    _ => {
-                        if req.method == "notifications/initialized" {
-                            Ok(serde_json::json!({}))
-                        } else {
-                            Err(format!("Unknown method: {}", req.method))
-                        }
-                    }
-                };
-
-                if req.method.starts_with("notifications/") {
-                    continue;
-                }
-
-                match res_result {
-                    Ok(v) => {
-                        if req.method == "tools/call" {
-                            result_value = Some(serde_json::json!({
-                                "content": [{
-                                    "type": "text",
-                                    "text": v.to_string()
-                                }]
-                            }));
-                        } else {
-                            result_value = Some(v);
-                        }
-                    },
-                    Err(e) => {
-                        error_val = Some(mcp_protocol::McpError {
-                            code: -32603,
-                            message: e,
-                        });
-                    }
-                }
-
-                let res = mcp_protocol::McpResponse {
-                    jsonrpc: "2.0".to_string(),
-                    id: req.id,
-                    result: result_value,
-                    error: error_val,
-                };
-                
+        if let Ok(req) = serde_json::from_str::<mcp_protocol::McpRequest>(&line) {
+            if let Some(res) = mcp_protocol::handle_mcp_request(&client_id, req, state.clone()).await {
                 if let Ok(json_res) = serde_json::to_string(&res) {
-                    println!("{}", json_res);
+                    let _ = stdout.write_all(json_res.as_bytes()).await;
+                    let _ = stdout.write_all(b"\n").await;
+                    let _ = stdout.flush().await;
                 }
             }
-            Err(e) => error!("Parse error: {}", e),
         }
     }
+
+    Ok(())
+}
+
+async fn query_status(tcp_ipc_port: u16) -> Result<(), Box<dyn std::error::Error>> {
+    let status_str = send_control_cmd(tcp_ipc_port, "STATUS").await?;
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&status_str) {
+        println!("{}", serde_json::to_string_pretty(&val)?);
+    } else {
+        println!("{}", status_str);
+    }
+    Ok(())
+}
+
+async fn send_control_cmd(tcp_ipc_port: u16, cmd: &str) -> Result<String, Box<dyn std::error::Error>> {
+    #[cfg(unix)]
+    if Path::new(daemon::UNIX_SOCKET_PATH).exists() {
+        if let Ok(mut stream) = tokio::net::UnixStream::connect(daemon::UNIX_SOCKET_PATH).await {
+            stream.write_all(format!("{}\n", cmd).as_bytes()).await?;
+            stream.flush().await?;
+            let mut reader = BufReader::new(stream).lines();
+            if let Ok(Some(line)) = reader.next_line().await {
+                return Ok(line);
+            }
+        }
+    }
+
+    let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", tcp_ipc_port)).await
+        .map_err(|_| "ChromaPilot daemon is not running.")?;
+    stream.write_all(format!("{}\n", cmd).as_bytes()).await?;
+    stream.flush().await?;
+    let mut reader = BufReader::new(stream).lines();
+    if let Ok(Some(line)) = reader.next_line().await {
+        return Ok(line);
+    }
+
+    Ok("OK".to_string())
 }

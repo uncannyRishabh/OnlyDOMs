@@ -14,22 +14,34 @@ When a user pastes this repo link or asks you to initialize, set up, or run Chro
    This automatically:
    - Validates Rust & Chrome environment
    - Compiles the release binary (`mcp-server/target/release/chromapilot`)
-   - Creates project-level `.cursor/mcp.json` and `.vscode/mcp.json`
-   - Automatically registers ChromaPilot in Claude Desktop, Windsurf, Antigravity, and Claude Code CLI (if available)
+   - Creates project-level `.cursor/mcp.json`, `.vscode/mcp.json`, `.idea/mcp.json`, and `.windsurf/mcp.json`
+   - Automatically registers ChromaPilot in Claude Desktop, Windsurf, JetBrains, Antigravity, and Claude Code CLI (if available)
 
 2. **If running inside Claude Code CLI**:
    ```bash
    claude mcp add chromapilot -- $(pwd)/mcp-server/target/release/chromapilot --port 9222
    ```
 
-3. **Inform the user to load the Chrome Extension**:
+3. **Preemptive Health Check Protocol**:
+   Before executing browser commands:
+   - Check daemon status: `$(pwd)/mcp-server/target/release/chromapilot status`
+   - If not running, start it: `$(pwd)/mcp-server/target/release/chromapilot daemon --port 9222`
+   - Confirm Chrome extension is 🟢 **Connected** (Port 9222).
+   - If MCP tools are detached, use first-class CLI commands directly:
+     - `chromapilot open <url>`
+     - `chromapilot tabs`
+     - `chromapilot eval "<expr>"`
+     - `chromapilot pipeline '<steps_json>'`
+     *(Never use raw python or ad-hoc scripts)*
+
+4. **Inform the user to load the Chrome Extension**:
    - Directory: `<repo-root>/extension`
    - Steps: Open `chrome://extensions/` -> Enable **Developer mode** -> Click **Load unpacked** -> Select the `extension/` directory.
    - Or launch Chrome directly with the extension loaded:
      - macOS: `open -a "Google Chrome" --args --load-extension="$(pwd)/extension"`
      - Linux: `google-chrome --load-extension="$(pwd)/extension"`
 
-4. **Verify Connectivity**:
+5. **Verify Connectivity**:
    When the extension is attached, its toolbar badge shows 🟢 **Connected** (Port `9222`).
 
 ## Development Commands

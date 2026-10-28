@@ -9,21 +9,20 @@ You have access to **ChromaPilot**, a high-performance browser automation MCP se
 
 ---
 
-## 1. Pre-Flight Health Check
+## 1. Pre-Flight Health Check & Multi-Chat Architecture
 
-Before issuing any browser commands:
+ChromaPilot uses a **Decoupled Daemon + Multiplexed Client Architecture**:
+- A single long-lived daemon owns the WebSocket connection to Google Chrome on `127.0.0.1:9222`.
+- When an AI agent starts a conversation, the MCP proxy connects directly to the shared daemon (auto-spawning it if needed).
+- Multiple chat windows/agents run concurrently without connection conflicts or dropping browser sessions upon chat termination.
 
 1. **Check Daemon Status**:
-   - Check if the ChromaPilot daemon is listening on port `9222` (e.g., via `lsof -i :9222`).
+   - Check status via:
+     `/Users/rishabhrajgupta/Developer/chromapilot-browser-automation/mcp-server/target/release/chromapilot status`
    - **If NOT running**:
-     - Attempt to start the daemon in the background:
-       `./mcp-server/target/release/chromapilot --port 9222`
-     - If restricted by permissions or sandbox, inform the user:
-       > ⚠️ **ChromaPilot daemon is not running.** Please start it with:
-       > ```bash
-       > ./mcp-server/target/release/chromapilot --port 9222
-       > ```
-   - **If running**: Inform the user: *"ChromaPilot daemon is active on port 9222."*
+     - The MCP proxy automatically auto-spawns the daemon on demand, or start it explicitly with:
+       `/Users/rishabhrajgupta/Developer/chromapilot-browser-automation/mcp-server/target/release/chromapilot daemon --port 9222`
+   - **If running**: Status outputs active port, extension status, and active tab locks.
 
 2. **Browser-Wide Extension Connection**:
    - The session operates **browser-wide** across all tabs; you do not need to attach tabs one-by-one.
@@ -32,9 +31,32 @@ Before issuing any browser commands:
        > ⚠️ **ChromaPilot Chrome extension is disconnected.**
        > Please ensure the ChromaPilot extension icon in Chrome shows 🟢 **Connected** (Port `9222`).
 
+3. **Execution Mode (MCP Tools vs Direct CLI)**:
+   - When inside an active MCP environment, invoke the native tools (`execute_browser_pipeline`, `create_tab`, `evaluate_expression`, etc.).
+   - If MCP tools are detached or operating from terminal, use first-class CLI commands:
+     - Open URL: `chromapilot open <url>`
+     - List tabs: `chromapilot tabs`
+     - Evaluate JS: `chromapilot eval "<expr>"`
+     - Run pipeline: `chromapilot pipeline '<steps_json>'`
+     *(Never write ad-hoc Python or shell wrappers)*
+
 ---
 
-## 2. Intelligent Tab Management (New Tab vs In-Session Navigation)
+## 2. Multi-Agent Tab Isolation & Lock Protection
+
+ChromaPilot guarantees **strict tab isolation** between concurrent agents:
+1. **Exclusive Tab Locks**:
+   - When an agent works on a tab (via pipeline, navigation, input, testing, or selection), that tab is exclusively leased to that agent.
+   - Another agent **cannot intercept or execute commands on the same tab**. Any attempt by a second agent to switch to a locked tab will return a collision-prevention error.
+2. **Concurrent Agents Work in Separate Tabs**:
+   - If Agent 1 is working on Tab A, Agent 2 automatically starts or resumes work in an unreserved tab or automatically provisions a new tab (`create_tab`).
+   - `list_browser_sessions` shows `is_locked`, `locked_by_current_agent`, and `locked_by_other_agent` so agents can identify available vs. busy tabs.
+3. **Automatic Lock Cleanup**:
+   - When an agent finishes or closes its chat session, its tab locks are automatically freed for other agents or the user.
+
+---
+
+## 3. Intelligent Tab Management (New Tab vs In-Session Navigation)
 
 Before navigating to an external URL, inspect the active tab's URL:
 
@@ -52,9 +74,22 @@ Before navigating to an external URL, inspect the active tab's URL:
 
 ---
 
-## 3. Resilient Batch Operations (Pipeline Protocol)
+## 4. Resilient Batch Operations (Pipeline Protocol)
 
 **Always prefer `execute_browser_pipeline`** over individual atomic tool calls. It batches multi-step operations into a single turn with built-in awaits, auto-scrolling, semantic targeting, and retry resilience. Target a **1 to 2 compound turn ceiling** for standard workflows.
+
+### Pipeline Schema:
+```json
+{
+  "tab_id": 12345, // optional (defaults to agent's assigned or clean tab)
+  "steps": [
+    { "action": "navigate", "url": "https://example.com" },
+    { "action": "wait_for", "selector": "#btn" },
+    { "action": "click", "text": "Submit" }
+  ]
+}
+```
+*(Note: `"steps"` is the primary parameter; `"actions"` is also supported as an alias).*
 
 ### Supported Pipeline Actions:
 - `navigate`: `{ "action": "navigate", "url": "https://..." }`
@@ -80,16 +115,17 @@ Before navigating to an external URL, inspect the active tab's URL:
 
 ---
 
-## 4. Automated Testing Engine (`run_browser_test`)
+## 5. Automated Testing Engine (`run_browser_test`)
 
 For defect or feature testing, use `run_browser_test`. Provide a plain text description of what to test or explicit steps. The engine decomposes descriptions into small steps, executes each, captures screenshots into a dedicated directory (`test_reports/<test_name>_<timestamp>/`), and outputs both `test_summary.md` and `test_report.json`.
 
 ---
 
-## 5. Token Economy & Exploration Rules
+## 6. Token Economy & Exploration Rules
 
 1. **Zero Schema & Source Exploration**: Do NOT inspect `.json` schema files or local codebase files (`.rs`, `.js`). All schemas and actions are fully specified above.
 2. **Compound Batching Ceiling**: Standard tasks (e.g. open site, scroll, click, fill, send) MUST be dispatched in a single `execute_browser_pipeline` call rather than separate turn-by-turn micro-steps.
 3. **Anti-Bloat DOM Queries**: Never execute `document.querySelectorAll('*')` or dump full container `innerText`/`innerHTML` in `evaluate_expression`. Queries must be targeted (e.g. specific IDs, attributes, or scoped selectors).
-4. **Compact Tab Format**: `list_browser_sessions` returns lightweight objects `{ id, title, url, active }`. Only request `"detailed": true` if low-level Chromium debug flags are strictly required.
+4. **Compact Tab Format**: `list_browser_sessions` returns lightweight objects `{ id, title, url, active, is_locked, locked_by_current_agent, locked_by_other_agent }` with `http://`, `https://`, and query parameters automatically stripped in the Rust layer. Only request `"detailed": true` if low-level Chromium debug flags are strictly required.
 5. **Screenshot Discipline**: Use `take_screenshot` with `save_path` (or `run_browser_test`) when visual verification is needed. This avoids polluting context tokens with giant base64 image strings.
+6. **DOM Chain Traversal & Evaluation**: When building element ancestry or parent chains in `evaluate_expression`, always include a `textContent` property (e.g. `textContent: (el.innerText || el.textContent || '').trim()`). ChromaPilot's Rust layer automatically prunes all `null` attributes, strips inline CSS styling (`style="..."`), and truncates `textContent` inside `chain` arrays to 100 characters to prevent prompt bloat while preserving full `textContent` for top-level queries.

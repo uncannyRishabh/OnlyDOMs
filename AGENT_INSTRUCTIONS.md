@@ -11,29 +11,33 @@ You have access to **ChromaPilot**, a high-performance browser automation MCP se
 
 ---
 
-## 1. Pre-Flight Health Check
+## 1. Pre-Flight Health Check & Execution Protocol
 
-Before issuing any browser commands:
+Before issuing any browser commands, follow this preemptive protocol:
 
-1. **Check Server Status**:
-   - Check if the ChromaPilot server is listening on port `9222` (e.g., via `lsof -i :9222`).
-   - **If NOT running**:
-     - Attempt to start the server in the background:
-       `./mcp-server/target/release/chromapilot --port 9222`
-       *(or: `cargo run --release --manifest-path mcp-server/Cargo.toml -- --port 9222`)*
-     - If restricted by permissions or sandbox, inform the user:
-       > ⚠️ **ChromaPilot server is not running.** Please start it with:
-       > ```bash
-       > ./mcp-server/target/release/chromapilot --port 9222
-       > ```
-   - **If running**: Proceed with browser commands.
+1. **Verify Binary & Daemon Status**:
+   - Check if the daemon is running:
+     `/Users/rishabhrajgupta/Developer/chromapilot-browser-automation/mcp-server/target/release/chromapilot status`
+   - **If binary missing**: Run `./setup.sh` or `cargo build --release --manifest-path mcp-server/Cargo.toml`.
+   - **If daemon NOT running**:
+     - Start it in the background:
+       `/Users/rishabhrajgupta/Developer/chromapilot-browser-automation/mcp-server/target/release/chromapilot daemon --port 9222`
+     - Or launch via `./setup.sh` if initial setup is needed.
 
-2. **Browser-Wide Extension Connection**:
-   - The session operates **browser-wide** across all tabs; you do not need to attach tabs one-by-one.
-   - If any tool returns `"No active browser session detected"`:
-     - Stop immediately and instruct the user:
+2. **Verify Browser Extension Connection**:
+   - The session operates **browser-wide** across all tabs.
+   - If `status` outputs `extension_connected: false` or any tool returns `"No active browser session detected"`:
+     - Instruct the user:
        > ⚠️ **ChromaPilot Chrome extension is disconnected.**
        > Please ensure the ChromaPilot extension icon in Chrome shows 🟢 **Connected** (Port `9222`).
+
+3. **Execution Mode (MCP Tools vs First-Class CLI)**:
+   - **Inside MCP-Enabled Agent Context**: Always invoke native MCP tools (`execute_browser_pipeline`, `create_tab`, `evaluate_expression`, etc.).
+   - **When MCP Tool Interface is Detached or from Terminal**: Never write ad-hoc Python or shell scripts. Use ChromaPilot's first-class CLI subcommands:
+     - Open tab: `./mcp-server/target/release/chromapilot open "https://example.com"`
+     - List tabs: `./mcp-server/target/release/chromapilot tabs`
+     - Evaluate JS: `./mcp-server/target/release/chromapilot eval "document.title" [--tab-id <id>]`
+     - Run pipeline: `./mcp-server/target/release/chromapilot pipeline '<steps_json>'`
 
 ---
 
@@ -105,6 +109,7 @@ For defect or feature validation, use `run_browser_test`. It breaks down your te
 1. **Zero Schema & Source Exploration**: Do NOT inspect `.json` schema files or local codebase files (`.rs`, `.js`). All schemas and actions are fully specified above.
 2. **Compound Batching Ceiling**: Standard tasks (e.g. open site, scroll, click, fill, send) MUST be dispatched in a single `execute_browser_pipeline` call rather than separate turn-by-turn micro-steps.
 3. **Anti-Bloat DOM Queries**: Never execute `document.querySelectorAll('*')` or dump full container `innerText`/`innerHTML` in `evaluate_expression`. Queries must be targeted (e.g. specific IDs, attributes, or scoped selectors).
-4. **Compact Tab Format**: `list_browser_sessions` returns lightweight objects `{ id, title, url, active }`. Only request `"detailed": true` if low-level Chromium debug flags are strictly required.
+4. **Compact Tab Format**: `list_browser_sessions` returns lightweight objects `{ id, title, url, active }` with `http://`, `https://`, and query parameters automatically stripped in the Rust layer. Only request `"detailed": true` if low-level Chromium debug flags are strictly required.
 5. **Screenshot Discipline**: Use `take_screenshot` with `save_path` (or `run_browser_test`) when visual verification is needed. This avoids polluting context tokens with giant base64 image strings.
+6. **DOM Chain Traversal & Evaluation**: When building element ancestry or parent chains in `evaluate_expression`, always include a `textContent` property (e.g. `textContent: (el.innerText || el.textContent || '').trim()`). ChromaPilot's Rust layer automatically prunes all `null` attributes, strips inline CSS styling (`style="..."`), and truncates `textContent` inside `chain` arrays to 100 characters to prevent prompt bloat while preserving full `textContent` for top-level queries.
 ```

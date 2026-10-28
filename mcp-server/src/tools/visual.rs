@@ -79,7 +79,7 @@ pub fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
 
 /// Capture clean page screenshot (viewport or full scrollable page).
 /// Uses compositor surface capture to strictly omit browser UI and DevTools banners.
-pub async fn take_screenshot(state: SharedHub, params: Value) -> Result<Value, String> {
+pub async fn take_screenshot(state: SharedHub, tab_id: Option<u64>, params: Value) -> Result<Value, String> {
     let full_page = params.get("full_page").and_then(|v| v.as_bool()).unwrap_or(false);
     let raw_format = params.get("format").and_then(|v| v.as_str()).unwrap_or("png").to_lowercase();
     let format = match raw_format.as_str() {
@@ -99,7 +99,7 @@ pub async fn take_screenshot(state: SharedHub, params: Value) -> Result<Value, S
     let mut width = 1280.0;
     let mut height = 800.0;
 
-    let eval_res = send_cdp_command(state.clone(), "Runtime.evaluate", serde_json::json!({
+    let eval_res = send_cdp_command(state.clone(), tab_id, "Runtime.evaluate", serde_json::json!({
         "expression": "(() => {
             const doc = document.documentElement;
             const body = document.body;
@@ -153,7 +153,7 @@ pub async fn take_screenshot(state: SharedHub, params: Value) -> Result<Value, S
     }
 
     // Attempt CDP getLayoutMetrics for additional precision (take maximum to avoid clipping)
-    if let Ok(metrics) = send_cdp_command(state.clone(), "Page.getLayoutMetrics", serde_json::json!({})).await {
+    if let Ok(metrics) = send_cdp_command(state.clone(), tab_id, "Page.getLayoutMetrics", serde_json::json!({})).await {
         if full_page {
             if let Some(cs) = metrics.get("cssContentSize").or_else(|| metrics.get("contentSize")) {
                 let mw = cs.get("width").and_then(|v| v.as_f64()).unwrap_or(width);
@@ -190,7 +190,7 @@ pub async fn take_screenshot(state: SharedHub, params: Value) -> Result<Value, S
     }
 
     // 3. Dispatch screenshot capture via CDP
-    let screenshot_res = send_cdp_command(state.clone(), "Page.captureScreenshot", screenshot_params).await?;
+    let screenshot_res = send_cdp_command(state.clone(), tab_id, "Page.captureScreenshot", screenshot_params).await?;
     let data = screenshot_res.get("data").and_then(|d| d.as_str()).ok_or("Failed to obtain screenshot data from CDP")?;
 
     // 4. Decode base64 image data
@@ -234,11 +234,11 @@ pub async fn take_screenshot(state: SharedHub, params: Value) -> Result<Value, S
 }
 
 /// Backwards-compatible capture_viewport function: captures a clean viewport screenshot without grid overlay.
-pub async fn capture_viewport(state: SharedHub, params: Value) -> Result<Value, String> {
+pub async fn capture_viewport(state: SharedHub, tab_id: Option<u64>, params: Value) -> Result<Value, String> {
     let format = params.get("format").and_then(|v| v.as_str()).unwrap_or("webp");
     let quality = params.get("quality").and_then(|v| v.as_u64()).unwrap_or(80);
 
-    let res = take_screenshot(state, serde_json::json!({
+    let res = take_screenshot(state, tab_id, serde_json::json!({
         "full_page": false,
         "format": format,
         "quality": quality,

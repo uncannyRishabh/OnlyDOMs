@@ -26,7 +26,7 @@ async fn send_ws_cmd(state: SharedState, cmd_type: &str, params: Value) -> Resul
 
     let tx = match &lock.tx {
         Some(tx) => tx.clone(),
-        None => return Err("Chrome extension is not connected to ChromaPilot hub.".into()),
+        None => return Err("Chrome extension is not connected to OnlyDOMs hub.".into()),
     };
 
     let id = uuid::Uuid::new_v4().to_string();
@@ -85,8 +85,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let ws_listener = ws_listener.expect("Cannot bind WebSocket port");
-    println!("🟢 ChromaPilot WS Hub listening on ws://127.0.0.1:{}", ws_port);
-    let _ = tokio::fs::write("/tmp/chromapilot_active_port.txt", ws_port.to_string()).await;
+    println!("🟢 OnlyDOMs WS Hub listening on ws://127.0.0.1:{}", ws_port);
+    let _ = tokio::fs::write("/tmp/onlydoms_active_port.txt", ws_port.to_string()).await;
+    let _ = tokio::fs::write(std::env::temp_dir().join("onlydoms_active_port.txt"), ws_port.to_string()).await;
 
     // Find and bind HTTP port
     let http_candidates = [9225, 9925, 9226, 9926, 9227];
@@ -100,8 +101,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let http_listener = http_listener.expect("Cannot bind HTTP port");
-    println!("🚀 ChromaPilot HTTP API listening on http://127.0.0.1:{}", http_port);
-    let _ = tokio::fs::write("/tmp/chromapilot_http_port.txt", http_port.to_string()).await;
+    println!("🚀 OnlyDOMs HTTP API listening on http://127.0.0.1:{}", http_port);
+    let _ = tokio::fs::write("/tmp/onlydoms_http_port.txt", http_port.to_string()).await;
+    let _ = tokio::fs::write(std::env::temp_dir().join("onlydoms_http_port.txt"), http_port.to_string()).await;
 
     // Background WebSocket Hub Acceptor
     let ws_state = state.clone();
@@ -229,7 +231,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Err(e) => format!("{{\"error\": {}}}", serde_json::json!(e)),
                 }
             } else {
-                "{\"status\":\"ok\",\"service\":\"ChromaPilot Daemon\"}".to_string()
+                "{\"status\":\"ok\",\"service\":\"OnlyDOMs Daemon\"}".to_string()
             };
 
             let resp = format!(

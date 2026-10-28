@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# ChromaPilot Initialization & Setup Script
+# OnlyDOMs Initialization & Setup Script
 # Automatically builds the Rust MCP server, validates the Chrome extension,
-# generates workspace MCP configs (.cursor, .vscode), and registers with AI agent clients.
+# generates workspace MCP configs (.cursor, .vscode, .idea, .windsurf), and registers with AI agent clients.
 
 set -e
 
@@ -18,7 +18,7 @@ NC='\033[0m' # No Color
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 MCP_SERVER_DIR="$REPO_DIR/mcp-server"
 EXTENSION_DIR="$REPO_DIR/extension"
-BINARY_PATH="$MCP_SERVER_DIR/target/release/chromapilot"
+BINARY_PATH="$MCP_SERVER_DIR/target/release/onlydoms"
 PORT="9222"
 
 # Flags
@@ -27,25 +27,23 @@ REGISTER_CLAUDE=false
 REGISTER_WINDSURF=false
 REGISTER_ANTIGRAVITY=false
 REGISTER_INTELLIJ=false
-AUTO_INSTALL_RUST=false
 WRITE_WORKSPACE_CONFIG=true
 
 show_help() {
     cat <<EOF
-ChromaPilot Setup & Auto-Initialization Script
+OnlyDOMs Setup & Auto-Initialization Script
 
 Usage:
   ./setup.sh [OPTIONS]
 
 Options:
-  -i, --install, --register-all   Auto-build and register ChromaPilot with all detected
+  -i, --install, --register-all   Auto-build and register OnlyDOMs with all detected
                                   MCP clients (VS Code, Cursor, Windsurf, IntelliJ IDEA / JetBrains,
                                   Claude Desktop, Antigravity, Claude Code CLI).
   --register-claude               Register with Claude Desktop config.
   --register-windsurf             Register with Windsurf MCP config.
   --register-antigravity          Register with Antigravity / Gemini CLI config.
   --register-intellij             Register with JetBrains / IntelliJ IDEA MCP config.
-  --auto-install-rust             Attempt to install Rust/Cargo via rustup if not present.
   --no-workspace-config           Skip generating project-level workspace configs (.cursor, .vscode, .idea, .windsurf).
   -p, --port <PORT>               Specify default port for MCP server (default: 9222).
   -h, --help                      Show this help message.
@@ -88,10 +86,6 @@ while [[ $# -gt 0 ]]; do
             REGISTER_INTELLIJ=true
             shift
             ;;
-        --auto-install-rust)
-            AUTO_INSTALL_RUST=true
-            shift
-            ;;
         --no-workspace-config)
             WRITE_WORKSPACE_CONFIG=false
             shift
@@ -109,11 +103,11 @@ done
 
 echo -e "${CYAN}${BOLD}"
 echo "=========================================================="
-echo "    ChromaPilot — Browser Control for AI Agents"
+echo "    OnlyDOMs — Browser Automation for AI Coding Agents"
 echo "=========================================================="
 echo -e "${NC}"
 
-# 1. Check prerequisites
+# 1. Check prerequisites & auto-install Rust if missing
 echo -e "${BLUE}▶ Checking prerequisites...${NC}"
 
 # Try sourcing cargo environment if not already in PATH
@@ -124,22 +118,19 @@ if ! command -v cargo &> /dev/null; then
     fi
 fi
 
-# Auto-install Rust if requested and missing
+# Auto-install Rust via rustup non-interactively if missing
 if ! command -v cargo &> /dev/null; then
-    if [ "$AUTO_INSTALL_RUST" = true ]; then
-        echo -e "  ${YELLOW}ℹ${NC} Rust/Cargo not found. Attempting non-interactive installation via rustup..."
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-        if [ -f "$HOME/.cargo/env" ]; then
-            # shellcheck source=/dev/null
-            source "$HOME/.cargo/env"
-        fi
+    echo -e "  ${YELLOW}ℹ${NC} Rust/Cargo not found. Automatically installing via rustup..."
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    if [ -f "$HOME/.cargo/env" ]; then
+        # shellcheck source=/dev/null
+        source "$HOME/.cargo/env"
     fi
 fi
 
 if ! command -v cargo &> /dev/null; then
-    echo -e "${RED}✘ Rust and Cargo are not installed or not in PATH.${NC}"
+    echo -e "${RED}✘ Rust and Cargo could not be found or installed.${NC}"
     echo -e "  Please install Rust via: ${YELLOW}curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh${NC}"
-    echo -e "  Or re-run with: ${YELLOW}./setup.sh --auto-install-rust${NC}"
     exit 1
 fi
 
@@ -174,7 +165,7 @@ else
 fi
 
 # 3. Build MCP Server in release mode
-echo -e "\n${BLUE}▶ Building ChromaPilot Rust MCP Server (release mode)...${NC}"
+echo -e "\n${BLUE}▶ Building OnlyDOMs Rust MCP Server (release mode)...${NC}"
 cargo build --release --manifest-path "$MCP_SERVER_DIR/Cargo.toml"
 
 if [[ ! -f "$BINARY_PATH" ]]; then
@@ -192,8 +183,8 @@ if [ "$WRITE_WORKSPACE_CONFIG" = true ]; then
     cat > "$REPO_DIR/.cursor/mcp.json" <<EOF
 {
   "mcpServers": {
-    "chromapilot": {
-      "command": "\${workspaceFolder}/mcp-server/target/release/chromapilot",
+    "onlydoms": {
+      "command": "\${workspaceFolder}/mcp-server/target/release/onlydoms",
       "args": ["--port", "${PORT}"]
     }
   }
@@ -205,8 +196,8 @@ EOF
     cat > "$REPO_DIR/.vscode/mcp.json" <<EOF
 {
   "mcpServers": {
-    "chromapilot": {
-      "command": "\${workspaceFolder}/mcp-server/target/release/chromapilot",
+    "onlydoms": {
+      "command": "\${workspaceFolder}/mcp-server/target/release/onlydoms",
       "args": ["--port", "${PORT}"]
     }
   }
@@ -218,7 +209,7 @@ EOF
     cat > "$REPO_DIR/.idea/mcp.json" <<EOF
 {
   "mcpServers": {
-    "chromapilot": {
+    "onlydoms": {
       "command": "${BINARY_PATH}",
       "args": ["--port", "${PORT}"]
     }
@@ -231,7 +222,7 @@ EOF
     cat > "$REPO_DIR/.windsurf/mcp.json" <<EOF
 {
   "mcpServers": {
-    "chromapilot": {
+    "onlydoms": {
       "command": "${BINARY_PATH}",
       "args": ["--port", "${PORT}"]
     }
@@ -281,10 +272,13 @@ try:
     if "mcpServers" not in data or not isinstance(data["mcpServers"], dict):
         data["mcpServers"] = {}
 
-    data["mcpServers"]["chromapilot"] = {
+    data["mcpServers"]["onlydoms"] = {
         "command": binary_path,
         "args": ["--port", port]
     }
+
+    # Clean up old chromapilot entry if present
+    data["mcpServers"].pop("chromapilot", None)
 
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
@@ -318,14 +312,20 @@ fi
 
 if [ "$REGISTER_ANTIGRAVITY" = true ]; then
     echo -e "\n${BLUE}▶ Registering with Antigravity / Gemini CLI...${NC}"
-    ANTIGRAVITY_CONFIG="$HOME/.gemini/antigravity/mcp_config.json"
-    register_mcp_config "Antigravity" "$ANTIGRAVITY_CONFIG"
+    if [ -f "$HOME/.gemini/config/mcp_config.json" ] || [ -d "$HOME/.gemini/config" ]; then
+        register_mcp_config "Antigravity (config)" "$HOME/.gemini/config/mcp_config.json"
+    fi
+    if [ -f "$HOME/.gemini/antigravity/mcp_config.json" ] || [ -d "$HOME/.gemini/antigravity" ]; then
+        register_mcp_config "Antigravity (cli)" "$HOME/.gemini/antigravity/mcp_config.json"
+    fi
 
     # Install global agent skill if directory exists
     if [ -d "$HOME/.gemini/config/skills" ]; then
-        mkdir -p "$HOME/.gemini/config/skills/chromapilot"
-        cp "$REPO_DIR/skills/chromapilot/SKILL.md" "$HOME/.gemini/config/skills/chromapilot/SKILL.md" 2>/dev/null && \
-            echo -e "  ${GREEN}✔${NC} Installed global agent skill in ~/.gemini/config/skills/chromapilot/SKILL.md" || true
+        mkdir -p "$HOME/.gemini/config/skills/onlydoms"
+        cp "$REPO_DIR/skills/onlydoms/SKILL.md" "$HOME/.gemini/config/skills/onlydoms/SKILL.md" 2>/dev/null && \
+            echo -e "  ${GREEN}✔${NC} Installed global agent skill in ~/.gemini/config/skills/onlydoms/SKILL.md" || true
+        # Clean up old chromapilot skill dir
+        rm -rf "$HOME/.gemini/config/skills/chromapilot" 2>/dev/null || true
     fi
 fi
 
@@ -347,8 +347,9 @@ fi
 # Claude Code CLI registration
 if [ "$REGISTER_ALL" = true ] && command -v claude &> /dev/null; then
     echo -e "\n${BLUE}▶ Registering with Claude Code CLI...${NC}"
-    if claude mcp add chromapilot -- "$BINARY_PATH" --port "$PORT" &> /dev/null; then
-        echo -e "  ${GREEN}✔${NC} Registered with Claude Code CLI (claude mcp add)"
+    claude mcp remove chromapilot &> /dev/null || true
+    if claude mcp add onlydoms -- "$BINARY_PATH" --port "$PORT" &> /dev/null; then
+        echo -e "  ${GREEN}✔${NC} Registered with Claude Code CLI (claude mcp add onlydoms)"
     else
         echo -e "  ${YELLOW}ℹ${NC} Note: claude mcp add exited with non-zero status or was already registered"
     fi
@@ -398,7 +399,7 @@ echo -e "\n${BOLD}3. Ready-to-use MCP Configuration Snippet:${NC}"
 cat <<EOF
 {
   "mcpServers": {
-    "chromapilot": {
+    "onlydoms": {
       "command": "${BINARY_PATH}",
       "args": ["--port", "${PORT}"]
     }
@@ -407,8 +408,8 @@ cat <<EOF
 EOF
 
 echo -e "\n${BOLD}4. Verify Connection:${NC}"
-echo -e "   - When your agent launches ChromaPilot or when you start it directly:"
+echo -e "   - When your agent launches OnlyDOMs or when you start it directly:"
 echo -e "     ${YELLOW}${BINARY_PATH} --port ${PORT}${NC}"
-echo -e "   - Click the ChromaPilot icon in the Chrome toolbar."
+echo -e "   - Click the OnlyDOMs icon in the Chrome toolbar."
 echo -e "   - The badge will display 🟢 ${BOLD}Connected${NC} (Port ${PORT})."
 echo -e "   - Done! Your agent now has full, token-efficient control of Google Chrome.\n"

@@ -1,15 +1,15 @@
-# ChromaPilot Cursor Rules & Initialization
+# OnlyDOMs Cursor Rules & Initialization
 
 When asked to initialize, set up, or run this repository:
 
-1. Run `./setup.sh --install` (or `./setup.sh`) to compile the release binary and validate prerequisites.
-2. The MCP server binary is at `mcp-server/target/release/chromapilot`.
+1. Run `./setup.sh --install` (or `setup.bat --install` on Windows) to compile the release binary and validate prerequisites.
+2. The MCP server binary is at `mcp-server/target/release/onlydoms`.
 3. Cursor configuration is pre-configured in `.cursor/mcp.json`:
    ```json
    {
      "mcpServers": {
-       "chromapilot": {
-         "command": "${workspaceFolder}/mcp-server/target/release/chromapilot",
+       "onlydoms": {
+         "command": "${workspaceFolder}/mcp-server/target/release/onlydoms",
          "args": ["--port", "9222"]
        }
      }

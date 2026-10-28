@@ -44,7 +44,7 @@ pub async fn fill_inputs(state: SharedHub, tab_id: Option<u64>, params: Value) -
     
     let fields = params.get("fields").and_then(|f| f.as_array()).cloned().unwrap_or_default();
     let fields_json = serde_json::to_string(&fields).unwrap_or("[]".to_string());
-    let expr = format!("window.chromapilotInput && window.chromapilotInput.fill({});", fields_json);
+    let expr = format!("(window.onlydomsInput || window.chromapilotInput) && (window.onlydomsInput || window.chromapilotInput).fill({});", fields_json);
     
     let res = send_cdp_command(state.clone(), tab_id, "Runtime.evaluate", serde_json::json!({
         "expression": expr,

@@ -1,7 +1,7 @@
 {
   "mcpServers": {
-    "chromapilot": {
-      "command": "${workspaceFolder}/mcp-server/target/release/chromapilot",
+    "onlydoms": {
+      "command": "${workspaceFolder}/mcp-server/target/release/onlydoms",
       "args": ["--port", "9222"]
     }
   }

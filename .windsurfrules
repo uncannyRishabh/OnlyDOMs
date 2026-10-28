@@ -1,15 +1,15 @@
-# ChromaPilot Windsurf Rules & Auto-Initialization
+# OnlyDOMs Windsurf Rules & Auto-Initialization
 
 When asked to initialize, set up, or run this repository:
 
-1. Run `./setup.sh --install` to compile the release binary and automatically configure available MCP clients.
-2. The MCP server binary is located at `mcp-server/target/release/chromapilot`.
-3. To configure ChromaPilot in Windsurf manually (if not auto-registered via `./setup.sh --install`), add to `~/.codeium/windsurf/mcp_config.json`:
+1. Run `./setup.sh --install` (or `setup.bat --install` on Windows) to compile the release binary and automatically configure available MCP clients.
+2. The MCP server binary is located at `mcp-server/target/release/onlydoms`.
+3. To configure OnlyDOMs in Windsurf manually (if not auto-registered via `./setup.sh --install`), add to `~/.codeium/windsurf/mcp_config.json`:
    ```json
    {
      "mcpServers": {
-       "chromapilot": {
-         "command": "<absolute-path-to-repo>/mcp-server/target/release/chromapilot",
+       "onlydoms": {
+         "command": "<absolute-path-to-repo>/mcp-server/target/release/onlydoms",
          "args": ["--port", "9222"]
        }
      }

@@ -11,8 +11,16 @@ use crate::mcp_protocol::{handle_mcp_request, McpRequest};
 #[allow(dead_code)]
 pub const DEFAULT_WS_PORT: u16 = 9222;
 pub const DEFAULT_TCP_IPC_PORT: u16 = 9220;
-pub const UNIX_SOCKET_PATH: &str = "/tmp/chromapilot.sock";
-pub const PID_FILE_PATH: &str = "/tmp/chromapilot.pid";
+pub const UNIX_SOCKET_PATH: &str = "/tmp/onlydoms.sock";
+pub const PID_FILE_PATH: &str = "/tmp/onlydoms.pid";
+
+pub fn get_ipc_port_path() -> std::path::PathBuf {
+    std::env::temp_dir().join("onlydoms_ipc_port.txt")
+}
+
+pub fn get_pid_file_path() -> std::path::PathBuf {
+    std::env::temp_dir().join("onlydoms.pid")
+}
 
 pub async fn is_daemon_running() -> bool {
     // Check unix socket if available
@@ -38,11 +46,12 @@ pub async fn is_daemon_running() -> bool {
 }
 
 pub async fn run_daemon(ws_port: u16, tcp_ipc_port: u16) -> Result<(), Box<dyn std::error::Error>> {
-    info!("Starting ChromaPilot Daemon (WS port: {}, IPC port: {})...", ws_port, tcp_ipc_port);
+    info!("Starting OnlyDOMs Daemon (WS port: {}, IPC port: {})...", ws_port, tcp_ipc_port);
 
     // Write current PID to lockfile
     let pid = std::process::id();
     let _ = tokio::fs::write(PID_FILE_PATH, pid.to_string()).await;
+    let _ = tokio::fs::write(get_pid_file_path(), pid.to_string()).await;
 
     let state = Arc::new(Mutex::new(HubState::new()));
     let state_for_ws = state.clone();
@@ -55,8 +64,8 @@ pub async fn run_daemon(ws_port: u16, tcp_ipc_port: u16) -> Result<(), Box<dyn s
     // 2. Start TCP IPC listener (cross-platform & CLI)
     let tcp_listener = match tokio::net::TcpListener::bind(format!("127.0.0.1:{}", tcp_ipc_port)).await {
         Ok(l) => {
-            info!("ChromaPilot IPC TCP listener active on 127.0.0.1:{}", tcp_ipc_port);
-            let _ = tokio::fs::write("/tmp/chromapilot_ipc_port.txt", tcp_ipc_port.to_string()).await;
+            info!("OnlyDOMs IPC TCP listener active on 127.0.0.1:{}", tcp_ipc_port);
+            let _ = tokio::fs::write(get_ipc_port_path(), tcp_ipc_port.to_string()).await;
             Some(l)
         }
         Err(e) => {
@@ -73,7 +82,7 @@ pub async fn run_daemon(ws_port: u16, tcp_ipc_port: u16) -> Result<(), Box<dyn s
         }
         match tokio::net::UnixListener::bind(UNIX_SOCKET_PATH) {
             Ok(l) => {
-                info!("ChromaPilot IPC Unix Socket active on {}", UNIX_SOCKET_PATH);
+                info!("OnlyDOMs IPC Unix Socket active on {}", UNIX_SOCKET_PATH);
                 Some(l)
             }
             Err(e) => {
@@ -125,17 +134,18 @@ pub async fn run_daemon(ws_port: u16, tcp_ipc_port: u16) -> Result<(), Box<dyn s
         });
     }
 
-    info!("ChromaPilot Daemon fully initialized and ready for connections.");
+    info!("OnlyDOMs Daemon fully initialized and ready for connections.");
 
     // Wait for shutdown signal (SIGINT or SIGTERM)
     tokio::signal::ctrl_c().await?;
-    info!("Shutting down ChromaPilot Daemon...");
+    info!("Shutting down OnlyDOMs Daemon...");
 
     // Cleanup files
     #[cfg(unix)]
     let _ = tokio::fs::remove_file(UNIX_SOCKET_PATH).await;
     let _ = tokio::fs::remove_file(PID_FILE_PATH).await;
-    let _ = tokio::fs::remove_file("/tmp/chromapilot_ipc_port.txt").await;
+    let _ = tokio::fs::remove_file(get_pid_file_path()).await;
+    let _ = tokio::fs::remove_file(get_ipc_port_path()).await;
 
     Ok(())
 }
@@ -162,7 +172,7 @@ async fn handle_generic_stream<S>(
         if trimmed == "STATUS" || trimmed == "{\"method\":\"status\"}" {
             let mut lock = state.lock().await;
             let status = serde_json::json!({
-                "service": "ChromaPilot Daemon",
+                "service": "OnlyDOMs Daemon",
                 "status": "running",
                 "active_port": lock.active_port,
                 "extension_connected": lock.tx.is_some(),

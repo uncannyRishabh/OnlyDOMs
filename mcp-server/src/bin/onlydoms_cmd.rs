@@ -7,7 +7,7 @@ use std::time::Duration;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: chromapilot_cmd <eval_expr|list_tabs|attach_tab <id>>");
+        eprintln!("Usage: onlydoms_cmd <eval_expr|list_tabs|attach_tab <id>>");
         std::process::exit(1);
     }
 

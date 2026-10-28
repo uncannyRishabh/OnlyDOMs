@@ -396,10 +396,10 @@ pub async fn handle_mcp_request(
                 "tools": {}
             },
             "serverInfo": {
-                "name": "ChromaPilot",
+                "name": "OnlyDOMs",
                 "version": "1.0.0"
             },
-            "instructions": "⚠️ USER DISCRETIONARY WARNING: This agent possesses capabilities to actively inspect, navigate, execute arbitrary JavaScript, manipulate the DOM, and control your active browser session. ChromaPilot automatically isolates agent tabs so concurrent agents work safely in separate tabs without collisions."
+            "instructions": "⚠️ USER DISCRETIONARY WARNING: This agent possesses capabilities to actively inspect, navigate, execute arbitrary JavaScript, manipulate the DOM, and control your active browser session. OnlyDOMs automatically isolates agent tabs so concurrent agents work safely in separate tabs without collisions."
         })),
         "tools/list" => Ok(get_tools_list()),
         "tools/call" => {

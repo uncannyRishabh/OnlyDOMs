@@ -75,7 +75,8 @@ pub async fn start_hub(initial_port: u16, state: SharedHub) {
         lock.active_port = active_port;
     }
 
-    let _ = tokio::fs::write("/tmp/chromapilot_active_port.txt", active_port.to_string()).await;
+    let _ = tokio::fs::write("/tmp/onlydoms_active_port.txt", active_port.to_string()).await;
+    let _ = tokio::fs::write(std::env::temp_dir().join("onlydoms_active_port.txt"), active_port.to_string()).await;
 
     while let Ok((stream, _)) = listener.accept().await {
         let state_clone = state.clone();
@@ -171,7 +172,7 @@ pub async fn send_hub_command(
     let id = uuid::Uuid::new_v4().to_string();
     let tx = match &lock.tx {
         Some(tx) => tx.clone(),
-        None => return Err("No active browser session detected. Please ensure the ChromaPilot Chrome extension is installed, enabled, and connected.".into()),
+        None => return Err("No active browser session detected. Please ensure the OnlyDOMs Chrome extension is installed, enabled, and connected.".into()),
     };
     let (resp_tx, resp_rx) = oneshot::channel::<Value>();
     lock.pending.insert(id.clone(), resp_tx);

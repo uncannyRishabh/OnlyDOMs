@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "ChromaPilot — Chromium Browser Control",
+  "name": "OnlyDOMs - Browser Automation",
   "version": "1.0",
-  "description": "MCP server extension for efficient Chromium browser control",
+  "description": "High-performance browser automation MCP server and Chrome DevTools Protocol controller.",
   "permissions": ["debugger", "tabs", "activeTab", "scripting", "storage", "alarms"],
   "host_permissions": ["<all_urls>"],
   "background": {

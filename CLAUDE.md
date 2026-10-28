@@ -1,37 +1,41 @@
-# ChromaPilot — Claude & Agent Instructions
+# OnlyDOMs — Claude & Agent Instructions
 
-ChromaPilot is a high-performance browser automation system that bridges AI coding agents (Claude, Cursor, Windsurf, Antigravity) to an active Google Chrome browser session via a Rust MCP server and a Manifest V3 Chrome Extension.
+OnlyDOMs is a high-performance browser automation system purpose-built for agentic SDLC and autonomous web operations. It bridges AI coding agents (Claude, Cursor, Windsurf, Antigravity) to an active Google Chrome browser session via a Rust MCP server and a Manifest V3 Chrome Extension.
 
 ## 🚀 Quick Initialization (When Asked to Initialize this Repo)
 
-When a user pastes this repo link or asks you to initialize, set up, or run ChromaPilot:
+When a user pastes this repo link or asks you to initialize, set up, or run OnlyDOMs:
 
 1. **Run the automated setup script**:
-   ```bash
-   ./setup.sh --install
-   ```
-   *(Or `make install` / `./setup.sh`)*
+   - macOS / Linux:
+     ```bash
+     ./setup.sh --install
+     ```
+   - Windows:
+     ```cmd
+     setup.bat --install
+     ```
    This automatically:
-   - Validates Rust & Chrome environment
-   - Compiles the release binary (`mcp-server/target/release/chromapilot`)
+   - Validates/installs Rust & Chrome environment
+   - Compiles the release binary (`mcp-server/target/release/onlydoms`)
    - Creates project-level `.cursor/mcp.json`, `.vscode/mcp.json`, `.idea/mcp.json`, and `.windsurf/mcp.json`
-   - Automatically registers ChromaPilot in Claude Desktop, Windsurf, JetBrains, Antigravity, and Claude Code CLI (if available)
+   - Automatically registers OnlyDOMs in Claude Desktop, Windsurf, JetBrains, Antigravity, and Claude Code CLI (if available)
 
 2. **If running inside Claude Code CLI**:
    ```bash
-   claude mcp add chromapilot -- $(pwd)/mcp-server/target/release/chromapilot --port 9222
+   claude mcp add onlydoms -- $(pwd)/mcp-server/target/release/onlydoms --port 9222
    ```
 
 3. **Preemptive Health Check Protocol**:
    Before executing browser commands:
-   - Check daemon status: `$(pwd)/mcp-server/target/release/chromapilot status`
-   - If not running, start it: `$(pwd)/mcp-server/target/release/chromapilot daemon --port 9222`
+   - Check daemon status: `$(pwd)/mcp-server/target/release/onlydoms status`
+   - If not running, start it: `$(pwd)/mcp-server/target/release/onlydoms daemon --port 9222`
    - Confirm Chrome extension is 🟢 **Connected** (Port 9222).
    - If MCP tools are detached, use first-class CLI commands directly:
-     - `chromapilot open <url>`
-     - `chromapilot tabs`
-     - `chromapilot eval "<expr>"`
-     - `chromapilot pipeline '<steps_json>'`
+     - `onlydoms open <url>`
+     - `onlydoms tabs`
+     - `onlydoms eval "<expr>"`
+     - `onlydoms pipeline '<steps_json>'`
      *(Never use raw python or ad-hoc scripts)*
 
 4. **Inform the user to load the Chrome Extension**:
@@ -57,7 +61,7 @@ When a user pastes this repo link or asks you to initialize, set up, or run Chro
 [AI Agent]
     │ stdio (MCP JSON-RPC 2.0)
     ▼
-[Rust MCP Server (`chromapilot`)]
+[Rust MCP Server (`onlydoms`)]
     │ WebSocket (`ws://127.0.0.1:9222/mcp-relay`)
     ▼
 [Chrome Extension (Manifest V3)]
@@ -67,7 +71,7 @@ When a user pastes this repo link or asks you to initialize, set up, or run Chro
 
 ## Agent Operational Guidelines
 
-When interacting with the browser via ChromaPilot:
+When interacting with the browser via OnlyDOMs:
 
 1. **Prefer `execute_browser_pipeline`**:
    Batch multi-step actions (navigate, wait, click, fill, scroll) into a single pipeline call instead of single-step round trips. This eliminates LLM latency and saves up to 80% token costs.
@@ -78,4 +82,4 @@ When interacting with the browser via ChromaPilot:
    - For in-session navigation (clicking internal links, going back, checkout), stay in the current tab.
 
 3. **Extension Status**:
-   If a tool returns `"No active browser session detected"`, advise the user to ensure the ChromaPilot extension icon in Chrome shows 🟢 Connected (Port `9222`).
+   If a tool returns `"No active browser session detected"`, advise the user to ensure the OnlyDOMs extension icon in Chrome shows 🟢 Connected (Port `9222`).

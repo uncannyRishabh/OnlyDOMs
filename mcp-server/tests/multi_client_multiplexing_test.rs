@@ -1,6 +1,6 @@
-use chromapilot::tab_registry::TabRegistry;
-use chromapilot::mcp_protocol::{handle_mcp_request, McpRequest};
-use chromapilot::websocket_hub::HubState;
+use onlydoms::tab_registry::TabRegistry;
+use onlydoms::mcp_protocol::{handle_mcp_request, McpRequest};
+use onlydoms::websocket_hub::HubState;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};

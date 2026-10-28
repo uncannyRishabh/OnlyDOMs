@@ -1,6 +1,6 @@
 #![recursion_limit = "512"]
 
-use chromapilot::{mcp_protocol, websocket_hub, daemon};
+use onlydoms::{mcp_protocol, websocket_hub, daemon};
 
 use clap::{Parser, Subcommand};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -10,7 +10,7 @@ use tokio::sync::Mutex;
 use std::path::Path;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "ChromaPilot MCP Server & Daemon", long_about = None)]
+#[command(author, version, about = "OnlyDOMs MCP Server & Daemon", long_about = None)]
 struct Cli {
     #[arg(short, long, default_value_t = 9222, global = true)]
     port: u16,
@@ -76,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some(Commands::Stop) => {
             send_control_cmd(cli.ipc_port, "STOP").await?;
-            println!("ChromaPilot daemon stopped.");
+            println!("OnlyDOMs daemon stopped.");
         }
         Some(Commands::Open { url }) => {
             ensure_daemon_running(cli.port, cli.ipc_port).await?;
@@ -205,7 +205,7 @@ async fn ensure_daemon_running(ws_port: u16, tcp_ipc_port: u16) -> Result<(), Bo
 fn extract_mcp_text(res: &serde_json::Value) -> Result<String, Box<dyn std::error::Error>> {
     if let Some(err) = res.get("error") {
         let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or("Unknown error");
-        return Err(format!("ChromaPilot error: {}", msg).into());
+        return Err(format!("OnlyDOMs error: {}", msg).into());
     }
     if let Some(content) = res.get("result").and_then(|r| r.get("content")).and_then(|c| c.as_array()) {
         if let Some(first) = content.first() {
@@ -243,7 +243,7 @@ async fn send_mcp_cmd(tcp_ipc_port: u16, tool_name: &str, arguments: serde_json:
     }
 
     let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", tcp_ipc_port)).await
-        .map_err(|_| "ChromaPilot daemon is not running. Please start it with 'chromapilot daemon --port 9222'")?;
+        .map_err(|_| "OnlyDOMs daemon is not running. Please start it with 'onlydoms daemon --port 9222'")?;
     stream.write_all(format!("{}\n", req_str).as_bytes()).await?;
     stream.flush().await?;
     let mut reader = BufReader::new(stream).lines();
@@ -252,7 +252,7 @@ async fn send_mcp_cmd(tcp_ipc_port: u16, tool_name: &str, arguments: serde_json:
         return Ok(val);
     }
 
-    Err("No response from ChromaPilot daemon.".into())
+    Err("No response from OnlyDOMs daemon.".into())
 }
 
 async fn run_proxy(ws_port: u16, tcp_ipc_port: u16) -> Result<(), Box<dyn std::error::Error>> {
@@ -277,7 +277,7 @@ async fn run_proxy(ws_port: u16, tcp_ipc_port: u16) -> Result<(), Box<dyn std::e
     }
 
     // 3. Last-resort fallback: in-process execution (e.g. strict sandbox preventing detached subprocesses)
-    warn!("ChromaPilot daemon could not be reached or auto-spawned; falling back to in-process mode.");
+    warn!("OnlyDOMs daemon could not be reached or auto-spawned; falling back to in-process mode.");
     run_in_process_fallback(ws_port).await
 }
 
@@ -377,7 +377,7 @@ async fn send_control_cmd(tcp_ipc_port: u16, cmd: &str) -> Result<String, Box<dy
     }
 
     let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", tcp_ipc_port)).await
-        .map_err(|_| "ChromaPilot daemon is not running.")?;
+        .map_err(|_| "OnlyDOMs daemon is not running.")?;
     stream.write_all(format!("{}\n", cmd).as_bytes()).await?;
     stream.flush().await?;
     let mut reader = BufReader::new(stream).lines();

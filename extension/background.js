@@ -62,13 +62,13 @@ function connect(overridePort) {
             port = CANDIDATE_PORTS[currentPortIndex % CANDIDATE_PORTS.length];
         }
         const url = `ws://127.0.0.1:${port}/mcp-relay`;
-        console.log(`[ChromaPilot] Attempting connection to ${url}...`);
+        console.log(`[OnlyDOMs] Attempting connection to ${url}...`);
 
         let ws;
         try {
             ws = new WebSocket(url);
         } catch (e) {
-            console.warn(`[ChromaPilot] WebSocket init failed: ${e.message}`);
+            console.warn(`[OnlyDOMs] WebSocket init failed: ${e.message}`);
             currentPortIndex++;
             scheduleReconnect();
             return;
@@ -78,14 +78,14 @@ function connect(overridePort) {
 
         const connectTimeout = setTimeout(() => {
             if (ws && ws.readyState !== WebSocket.OPEN) {
-                console.log(`[ChromaPilot] Connection timeout on port ${port}`);
+                console.log(`[OnlyDOMs] Connection timeout on port ${port}`);
                 try { ws.close(); } catch (_) {}
             }
         }, 3000);
 
         ws.onopen = () => {
             clearTimeout(connectTimeout);
-            console.log(`[ChromaPilot] Connected to MCP hub on port ${port}`);
+            console.log(`[OnlyDOMs] Connected to MCP hub on port ${port}`);
             chrome.storage.session.set({ connected: true, activePort: port, browserWide: true });
             reconnectDelayMs = 2000;
         };
@@ -95,7 +95,7 @@ function connect(overridePort) {
             try {
                 data = JSON.parse(event.data);
             } catch (e) {
-                console.error("[ChromaPilot] Parse error:", e);
+                console.error("[OnlyDOMs] Parse error:", e);
                 return;
             }
 

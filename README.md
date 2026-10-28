@@ -1,6 +1,6 @@
-# OnlyDOMs 🔞⚡
+# OnlyDOMs ⚡
 
-> 💋 **"Tip 500 prompt tokens to watch Chrome perform custom clicks in a private session."**
+>  **"Tip 500 prompt tokens to watch Chrome perform custom clicks in a private session."**
 
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![Chrome MV3](https://img.shields.io/badge/Chrome-Manifest_V3-green.svg?style=flat-square&logo=googlechrome)](extension/)

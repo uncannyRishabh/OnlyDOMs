@@ -1,44 +1,128 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OnlyDOMs Browser Control</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <div class="header">
-    <strong>OnlyDOMs Browser Control</strong>
-  </div>
-  <div class="warning">
-    <strong>⚠️ USER DISCRETIONARY WARNING:</strong><br/>
-    This agent actively inspects, navigates, executes JavaScript, and controls the attached tab via Chrome DevTools Protocol.
-  </div>
-  
-  <div class="section">
-    <label>MCP Port:
-      <div class="port-row">
-        <input type="number" id="portInput" value="9222" placeholder="9222 or 9922" />
-        <button id="savePortBtn">Set Port</button>
+  <div class="app-container">
+    <!-- Header: Branding & Live Connection Pill -->
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-icon">⚡</span>
+        <div class="brand-text">
+          <span class="brand-title">OnlyDOMs</span>
+          <span class="brand-subtitle">Browser Control</span>
+        </div>
       </div>
-    </label>
+      <div id="connectionPill" class="status-pill status-disconnected" title="WebSocket status to MCP daemon">
+        <span class="status-dot"></span>
+        <span id="connectionText">Checking...</span>
+      </div>
+    </header>
+
+    <!-- Active Agent Sessions Leases Card -->
+    <section class="card" id="sessionsCard">
+      <div class="card-header">
+        <div class="card-title-group">
+          <span class="card-icon">🤖</span>
+          <h2 class="card-title">Active Agent Sessions</h2>
+          <span id="sessionCountBadge" class="badge">0</span>
+        </div>
+        <button id="emergencyDetachBtn" class="btn btn-danger btn-sm" disabled title="Instantly detach all agent sessions and revoke debugger access">
+          🚨 Detach All
+        </button>
+      </div>
+
+      <div id="sessionsList" class="sessions-list">
+        <div class="empty-state">
+          No active agent sessions. Agents lease tabs dynamically on demand.
+        </div>
+      </div>
+    </section>
+
+    <!-- Site Blacklist Manager Card (R5 / Features F7, F8) -->
+    <section class="card" id="blacklistCard">
+      <div class="card-header">
+        <div class="card-title-group">
+          <span class="card-icon">🛡️</span>
+          <h2 class="card-title">Site Blacklist</h2>
+          <span id="blockedCountBadge" class="badge">0</span>
+        </div>
+        <button id="clearAllBtn" class="btn btn-ghost btn-sm" style="display: none;" title="Remove all blocked patterns">
+          Clear All
+        </button>
+      </div>
+
+      <p class="card-description">
+        Blocked domains &amp; URL patterns agents are strictly prohibited from interacting with or navigating to.
+      </p>
+
+      <!-- Add Pattern Input Form -->
+      <form id="addPatternForm" class="input-group">
+        <input 
+          type="text" 
+          id="patternInput" 
+          class="form-control" 
+          placeholder="e.g. *.bank.com, facebook.com" 
+          autocomplete="off" 
+          spellcheck="false"
+          aria-label="Domain or URL pattern to block"
+        />
+        <button type="submit" id="addPatternBtn" class="btn btn-primary">
+          Add
+        </button>
+      </form>
+      <div id="inputError" class="input-error" style="display: none;"></div>
+
+      <!-- Quick Syntax Hints -->
+      <div class="pattern-hints">
+        <span class="hint-tag">Exact: <code>domain.com</code></span>
+        <span class="hint-tag">Wildcard: <code>*.bank.com</code></span>
+        <span class="hint-tag">Prefix: <code>https://corp/</code></span>
+      </div>
+
+      <!-- Blacklist Items Scrollable List -->
+      <div id="blacklistContainer" class="blacklist-container">
+        <!-- Rendered dynamically -->
+      </div>
+    </section>
+
+    <!-- Footer: Port Status & Power-User Controls -->
+    <footer class="app-footer">
+      <div class="footer-bar">
+        <span class="port-info">
+          Daemon Hub: <strong id="activePortNumber">Port 9222</strong>
+        </span>
+        <button id="toggleSettingsBtn" class="link-btn" type="button" aria-expanded="false">
+          ⚙️ Settings
+        </button>
+      </div>
+
+      <!-- Expandable Port Override Drawer -->
+      <div id="settingsDrawer" class="settings-drawer" style="display: none;">
+        <div class="drawer-row">
+          <label for="customPortInput" class="drawer-label">Override Port:</label>
+          <input 
+            type="number" 
+            id="customPortInput" 
+            class="form-control form-control-sm" 
+            placeholder="9222" 
+            min="1024" 
+            max="65535" 
+          />
+          <button id="savePortBtn" class="btn btn-secondary btn-sm" type="button">Connect</button>
+        </div>
+        <div class="drawer-hint">Default scan: 9222, 9922, 9223, 9923, 9224, 9924</div>
+      </div>
+
+      <!-- Floating Notification Toast -->
+      <div id="statusToast" class="toast" style="display: none;" role="status"></div>
+    </footer>
   </div>
 
-  <div class="section status-row">
-    WebSocket: <span id="wsStatus">🟡 Checking...</span>
-  </div>
-
-  <div class="section">
-    <label for="tabSelect">Target Tab:</label>
-    <select id="tabSelect">
-      <option value="">Loading tabs...</option>
-    </select>
-  </div>
-
-  <div class="section">
-    <button id="toggleBtn">Attach Session</button>
-  </div>
-
-  <div id="status"></div>
   <script src="popup.js"></script>
 </body>
 </html>

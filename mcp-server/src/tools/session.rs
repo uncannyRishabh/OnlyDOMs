@@ -53,6 +53,20 @@ pub async fn list_browser_sessions(
                             obj.insert("url".to_string(), Value::String(cleaned));
                         }
                     }
+
+                    // Annotate popup / opener tracking if known in HubState or tab properties
+                    if let Some(popup) = lock.spawned_popups.get(&tid) {
+                        if let Some(opener_id) = popup.opener_tab_id {
+                            obj.insert("opener_tab_id".to_string(), Value::Number(opener_id.into()));
+                        }
+                        obj.insert("is_popup".to_string(), Value::Bool(popup.is_popup));
+                    } else if !obj.contains_key("is_popup") {
+                        let opener = obj.get("openerTabId").and_then(|v| v.as_u64());
+                        if let Some(opener_id) = opener {
+                            obj.insert("opener_tab_id".to_string(), Value::Number(opener_id.into()));
+                        }
+                        obj.insert("is_popup".to_string(), Value::Bool(opener.is_some()));
+                    }
                 }
             }
         }

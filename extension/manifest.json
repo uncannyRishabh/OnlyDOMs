@@ -1,14 +1,21 @@
 {
   "manifest_version": 3,
   "name": "OnlyDOMs - Browser Automation",
-  "version": "1.0",
-  "description": "High-performance browser automation MCP server and Chrome DevTools Protocol controller.",
+  "version": "1.1",
+  "description": "High-performance browser automation MCP server, Top-Layer Agent HUD, and Chrome DevTools Protocol controller.",
   "permissions": ["debugger", "tabs", "activeTab", "scripting", "storage", "alarms"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js",
     "type": "module"
   },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/content_tree.js", "content/content_hud.js"],
+      "run_at": "document_idle"
+    }
+  ],
   "action": {
     "default_popup": "popup/popup.html"
   },

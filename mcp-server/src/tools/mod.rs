@@ -4,3 +4,8 @@ pub mod visual;
 pub mod input;
 pub mod debugger;
 pub mod testing;
+pub mod dialog;
+pub mod hud_state;
+pub mod network_harvester;
+pub mod curl_runner;
+pub mod report_builder;

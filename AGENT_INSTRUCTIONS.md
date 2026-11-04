@@ -13,103 +13,44 @@ You have access to **OnlyDOMs**, a high-performance browser automation MCP serve
 
 ## 1. Pre-Flight Health Check & Execution Protocol
 
-Before issuing any browser commands, follow this preemptive protocol:
-
 1. **Verify Binary & Daemon Status**:
-   - Check if the daemon is running:
-     `onlydoms status` (or `mcp-server/target/release/onlydoms status`)
-   - **If binary missing**: Run `./setup.sh` (macOS/Linux) or `setup.bat` (Windows).
-   - **If daemon NOT running**:
-     - Start it in the background:
-       `onlydoms daemon --port 9222` (or `mcp-server/target/release/onlydoms daemon --port 9222`)
-     - Or launch via `./setup.sh` if initial setup is needed.
+   - Check if the daemon is running: `onlydoms status` (or `mcp-server/target/release/onlydoms status`)
+   - **If daemon NOT running**: `onlydoms daemon --port 9222`
 
 2. **Verify Browser Extension Connection**:
-   - The session operates **browser-wide** across all tabs.
    - If `status` outputs `extension_connected: false` or any tool returns `"No active browser session detected"`:
-     - Instruct the user:
-       > ⚠️ **OnlyDOMs Chrome extension is disconnected.**
-       > Please ensure the OnlyDOMs extension icon in Chrome shows 🟢 **Connected** (Port `9222`).
-
-3. **Execution Mode (MCP Tools vs First-Class CLI)**:
-   - **Inside MCP-Enabled Agent Context**: Always invoke native MCP tools (`execute_browser_pipeline`, `create_tab`, `evaluate_expression`, etc.).
-   - **When MCP Tool Interface is Detached or from Terminal**: Never write ad-hoc Python or shell scripts. Use OnlyDOMs's first-class CLI subcommands:
-     - Open tab: `onlydoms open "https://example.com"`
-     - List tabs: `onlydoms tabs`
-     - Evaluate JS: `onlydoms eval "document.title" [--tab-id <id>]`
-     - Run pipeline: `onlydoms pipeline '<steps_json>'`
+     > ⚠️ **OnlyDOMs Chrome extension is disconnected.**
+     > Please ensure the OnlyDOMs extension icon in Chrome shows 🟢 **Connected** (Port `9222`).
 
 ---
 
 ## 2. Intelligent Tab Management (New Tab vs In-Session Navigation)
 
-Before navigating to an external URL, inspect the active tab's URL:
-
-1. **New Tab Case (Preserve User Work)**:
-   - If the active tab has an active user webpage (e.g. `docs.google.com`, `github.com`, etc.) and the user's intent is to open a **new website or independent task** (e.g., *"go to instagram"*, *"open youtube"*, *"search google for X"*):
-   - **Do NOT overwrite the user's active page.** Call `create_tab` (or the `new_tab` pipeline action) to perform the action in a fresh tab.
-
-2. **Clean Slate Case**:
-   - If the active tab is `chrome://newtab/`, `about:blank`, or an empty tab:
-   - Execute the request directly in the current tab.
-
-3. **In-Session Navigation Case**:
-   - If the user's intent is to navigate within the existing website, flow, or task (e.g., *"click settings"*, *"go to my profile"*, *"navigate back"*, *"proceed to checkout"*):
-   - Always perform the action in the **current tab**, maintaining context and login state.
+1. **New Tab Case (Preserve User Work)**: Call `create_tab` (or the `new_tab` pipeline action) when opening an independent website so you never overwrite the user's active tab.
+2. **Clean Slate Case**: Use the current tab if it is `chrome://newtab/` or `about:blank`.
+3. **In-Session Navigation Case**: Stay in the current tab when navigating within the same site or flow.
 
 ---
 
-## 3. Resilient Batch Operations (Pipeline Protocol)
+## 3. Task Intent Preview Rule & Resilient Batch Operations (`execute_browser_pipeline`)
 
-**Always prefer `execute_browser_pipeline`** over individual atomic tool calls. It batches multi-step operations into a single turn with built-in awaits, auto-scrolling, semantic targeting, and retry resilience. Target a **1 to 2 compound turn ceiling** for standard workflows.
+**Task Intent Preview Rule (180-Char / 30-Word Ceiling)**: Before invoking any MCP tool, always output a single one-line preview in chat (`> 🎯 **Intent:** <up to 30 words / 180 chars>`) AND pass the exact same string in the `"_intent"` parameter of the tool call so the Chrome Floating Pill displays your intent in real time with zero extra tool turns.
+
+**Always prefer `execute_browser_pipeline`** over individual atomic tool calls. Target a **1 to 2 compound turn ceiling** for standard workflows.
 
 ### Supported Pipeline Actions:
-- `navigate`: `{ "action": "navigate", "url": "https://..." }`
-- `new_tab`: `{ "action": "new_tab", "url": "https://..." }` (opens new tab & automatically attaches)
-- `switch_tab`: `{ "action": "switch_tab", "tab_id": 12345 }`
-- `wait_for`: `{ "action": "wait_for", "selector": "#btn", "timeout_ms": 8000 }` (polls until element exists and is visible)
-- `wait_condition`: `{ "action": "wait_condition", "expression": "document.readyState === 'complete'", "timeout_ms": 8000 }`
-- `wait_network_idle`: `{ "action": "wait_network_idle", "timeout_ms": 5000 }`
-- `click`: Semantic click with auto-scroll and retry:
-  - By text: `{ "action": "click", "text": "Send" }`
-  - By aria-label: `{ "action": "click", "aria_label": "Share" }`
-  - By CSS selector: `{ "action": "click", "selector": "button[type='submit']" }`
-  - Composite: `{ "action": "click", "selector": "div[role='button']", "text": "Submit" }`
-- `scroll`: Auto-detects scrollable container or scrolls window:
-  - `{ "action": "scroll", "direction": "down", "delta_y": 700 }`
-  - `{ "action": "scroll", "selector": ".feed-container", "delta_y": 500 }`
-- `evaluate`: In-pipeline JavaScript snippet execution:
-  - `{ "action": "evaluate", "expression": "window.location.href" }`
-- `fill_inputs`: `{ "action": "fill_inputs", "fields": [{ "selector": "input[name='q']", "value": "search query" }] }` (framework-safe for React, Vue, Angular)
-- `press_key`: `{ "action": "press_key", "key": "Enter" }` (supports Enter, Tab, Escape, ArrowDown, etc.)
-- `sleep`: `{ "action": "sleep", "duration_ms": 500 }`
-- `take_screenshot`: `{ "action": "take_screenshot", "full_page": false, "format": "png" }` (captures clean page content; set `save_path` to save directly to disk)
+- `navigate`, `new_tab`, `switch_tab`, `wait_for`, `wait_condition`, `wait_network_idle`
+- `click` (by `selector`, `text`, `aria_label`, or 16-column grid `quadrant` e.g. `"P9"` with HUD hit-test passthrough)
+- `scroll`, `evaluate`, `fill_inputs`, `press_key`, `sleep`
+- `take_screenshot`, `capture_grid_screenshot`, `print_to_pdf`, `handle_dialog`, `replay_curl`
 
 ---
 
-## 4. Automated Testing Engine (`run_browser_test`)
+## 4. Visual Test & Feature Overview Pipeline (`run_browser_test`) & cURL Replay (`replay_curl`)
 
-For defect or feature validation, use `run_browser_test`. It breaks down your test description into executable steps, executes them with visual capture at each step, validates assertions, and writes comprehensive markdown and JSON reports in `test_reports/<test_name>_<timestamp>/`.
-
-```json
-{
-  "name": "run_browser_test",
-  "arguments": {
-    "test_name": "checkout_promo_code_validation",
-    "description": "1. Navigate to https://store.example.com/cart\n2. Fill input[name='coupon'] with INVALID99\n3. Click button.apply-coupon\n4. Assert .error-message is visible",
-    "full_page_screenshots": false
-  }
-}
-```
-
----
-
-## 5. Token Economy & Exploration Rules
-
-1. **Zero Schema & Source Exploration**: Do NOT inspect `.json` schema files or local codebase files (`.rs`, `.js`). All schemas and actions are fully specified above.
-2. **Compound Batching Ceiling**: Standard tasks (e.g. open site, scroll, click, fill, send) MUST be dispatched in a single `execute_browser_pipeline` call rather than separate turn-by-turn micro-steps.
-3. **Anti-Bloat DOM Queries**: Never execute `document.querySelectorAll('*')` or dump full container `innerText`/`innerHTML` in `evaluate_expression`. Queries must be targeted (e.g. specific IDs, attributes, or scoped selectors).
-4. **Compact Tab Format**: `list_browser_sessions` returns lightweight objects `{ id, title, url, active }` with `http://`, `https://`, and query parameters automatically stripped in the Rust layer. Only request `"detailed": true` if low-level Chromium debug flags are strictly required.
-5. **Screenshot Discipline**: Use `take_screenshot` with `save_path` (or `run_browser_test`) when visual verification is needed. This avoids polluting context tokens with giant base64 image strings.
-6. **DOM Chain Traversal & Evaluation**: When building element ancestry or parent chains in `evaluate_expression`, always include a `textContent` property (e.g. `textContent: (el.innerText || el.textContent || '').trim()`). OnlyDOMs's Rust layer automatically prunes all `null` attributes, strips inline CSS styling (`style="..."`), and truncates `textContent` inside `chain` arrays to 100 characters to prevent prompt bloat while preserving full `textContent` for top-level queries.
+1. **`run_browser_test`**:
+   - Saves cloaked step screenshots (`webp`, `quality: 75`) to `test_reports/<run_id>/assets/step_<n>.webp`.
+   - Compiles `overview.html` and `overview.pdf` and serves openable/auto-print links on `http://127.0.0.1:9222/reports/<run_id>/overview.html?print=1`.
+2. **`replay_curl`**:
+   - Inspects the 50-item optimistic XHR/Fetch/Document ring buffer (`action: "list"`) or replays a `request_id` / modified `curl` command string natively in Rust without spawning a shell.
 ```

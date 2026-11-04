@@ -5,3 +5,6 @@ pub mod mcp_protocol;
 pub mod websocket_hub;
 pub mod daemon;
 pub mod tools;
+pub mod pipeline;
+pub mod update_checker;
+pub mod filter;

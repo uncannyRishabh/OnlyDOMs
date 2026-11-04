@@ -18,6 +18,14 @@ struct Cli {
     #[arg(long, default_value_t = 9220, global = true)]
     ipc_port: u16,
 
+    /// Skip automatic update check on startup
+    #[arg(long, default_value_t = false, global = true)]
+    no_update_check: bool,
+
+    /// Automatically rebuild without interactive confirmation
+    #[arg(long, default_value_t = false, global = true)]
+    auto_rebuild: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -30,6 +38,10 @@ enum Commands {
     Status,
     /// Stop the running daemon
     Stop,
+    /// Trigger reload of the running daemon
+    Reload,
+    /// Check whether OnlyDOMs binary is up to date with repository source
+    CheckUpdate,
     /// Open a URL in a new browser tab and attach to it
     Open {
         /// Target URL (e.g. https://www.instagram.com)
@@ -57,6 +69,20 @@ enum Commands {
         #[arg(long)]
         tab_id: Option<u64>,
     },
+    /// Interact with the page using normalized coordinates (0.0 to 1.0)
+    Interact {
+        /// Interaction action (click, hover, scroll)
+        action: String,
+        /// Normalized X coordinate (0.0 to 1.0)
+        #[arg(long)]
+        x_ratio: Option<f64>,
+        /// Normalized Y coordinate (0.0 to 1.0)
+        #[arg(long)]
+        y_ratio: Option<f64>,
+        /// Target tab ID (defaults to active/assigned tab)
+        #[arg(long)]
+        tab_id: Option<u64>,
+    },
 }
 
 #[tokio::main]
@@ -77,6 +103,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Commands::Stop) => {
             send_control_cmd(cli.ipc_port, "STOP").await?;
             println!("OnlyDOMs daemon stopped.");
+        }
+        Some(Commands::Reload) => {
+            let resp = send_control_cmd(cli.ipc_port, "RELOAD").await?;
+            println!("OnlyDOMs daemon reload response: {}", resp);
+        }
+        Some(Commands::CheckUpdate) => {
+            let result = onlydoms::update_checker::check_for_updates();
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            if result.is_outdated {
+                println!("\n⚠️ Update Available! Reasons:");
+                for r in &result.reasons {
+                    println!("  • {}", r);
+                }
+            } else {
+                println!("\n✔ OnlyDOMs binary is up to date.");
+            }
         }
         Some(Commands::Open { url }) => {
             ensure_daemon_running(cli.port, cli.ipc_port).await?;
@@ -167,6 +209,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("{}", text);
             }
         }
+        Some(Commands::Interact { action, x_ratio, y_ratio, tab_id }) => {
+            ensure_daemon_running(cli.port, cli.ipc_port).await?;
+            let mut args = serde_json::json!({ "action": action });
+            if let Some(x) = x_ratio { args.as_object_mut().unwrap().insert("x_ratio".to_string(), serde_json::json!(x)); }
+            if let Some(y) = y_ratio { args.as_object_mut().unwrap().insert("y_ratio".to_string(), serde_json::json!(y)); }
+            if let Some(t) = tab_id { args.as_object_mut().unwrap().insert("tab_id".to_string(), serde_json::json!(t)); }
+            let res = send_mcp_cmd(cli.ipc_port, "interact", args).await?;
+            let text = extract_mcp_text(&res)?;
+            println!("{}", text);
+        }
         None => {
             // Default MCP entrypoint: run as lightweight proxy, auto-starting daemon if needed
             run_proxy(cli.port, cli.ipc_port).await?;
@@ -178,6 +230,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn ensure_daemon_running(ws_port: u16, tcp_ipc_port: u16) -> Result<(), Box<dyn std::error::Error>> {
     if !daemon::is_daemon_running().await {
+        // Pre-flight check: if binary is outdated, compile before spawning detached daemon
+        if std::env::var("ONLYDOMS_SKIP_UPDATE_CHECK").is_err() {
+            let _ = onlydoms::update_checker::check_and_handle_update(onlydoms::update_checker::UpdateMode::Proxy).await;
+        }
+
         if let Ok(exe) = std::env::current_exe() {
             let _ = std::process::Command::new(exe)
                 .arg("daemon")
@@ -192,7 +249,7 @@ async fn ensure_daemon_running(ws_port: u16, tcp_ipc_port: u16) -> Result<(), Bo
         }
 
         let start = std::time::Instant::now();
-        while start.elapsed() < std::time::Duration::from_millis(2500) {
+        while start.elapsed() < std::time::Duration::from_millis(3000) {
             if daemon::is_daemon_running().await {
                 break;
             }

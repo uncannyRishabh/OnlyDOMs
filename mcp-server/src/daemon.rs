@@ -46,6 +46,28 @@ pub async fn is_daemon_running() -> bool {
 }
 
 pub async fn run_daemon(ws_port: u16, tcp_ipc_port: u16) -> Result<(), Box<dyn std::error::Error>> {
+    // 0. Startup Update Check & Rebuild/Reload Mechanism (Features F3, F4)
+    if std::env::var("ONLYDOMS_SKIP_UPDATE_CHECK").is_err() {
+        use std::io::IsTerminal;
+        let is_terminal = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
+        let mode = if is_terminal {
+            crate::update_checker::UpdateMode::Interactive
+        } else {
+            crate::update_checker::UpdateMode::Daemon
+        };
+
+        match crate::update_checker::check_and_handle_update(mode).await {
+            Ok(check_res) => {
+                if check_res.is_outdated {
+                    info!("Startup update check detected outdated binary: {:?}", check_res.reasons);
+                }
+            }
+            Err(e) => {
+                warn!("Startup update check completed with non-fatal notice: {}. Continuing startup.", e);
+            }
+        }
+    }
+
     info!("Starting OnlyDOMs Daemon (WS port: {}, IPC port: {})...", ws_port, tcp_ipc_port);
 
     // Write current PID to lockfile
@@ -186,6 +208,39 @@ async fn handle_generic_stream<S>(
         if trimmed == "STOP" {
             let _ = write_half.write_all(b"{\"status\":\"stopping\"}\n").await;
             let _ = write_half.flush().await;
+            std::process::exit(0);
+        }
+
+        if trimmed == "RELOAD" {
+            let mut lock = state.lock().await;
+            let locks = lock.tab_registry.list_active_locks();
+            if !locks.is_empty() {
+                let resp = serde_json::json!({
+                    "status": "deferred",
+                    "message": "Cannot reload: active agent tab leases in progress",
+                    "active_locks": locks
+                });
+                let _ = write_half.write_all(format!("{}\n", resp).as_bytes()).await;
+                let _ = write_half.flush().await;
+                continue;
+            }
+            drop(lock);
+
+            let _ = write_half.write_all(b"{\"status\":\"reloading\"}\n").await;
+            let _ = write_half.flush().await;
+
+            // Clean up socket and pid files before exec
+            #[cfg(unix)]
+            let _ = tokio::fs::remove_file(UNIX_SOCKET_PATH).await;
+            let _ = tokio::fs::remove_file(PID_FILE_PATH).await;
+            let _ = tokio::fs::remove_file(get_pid_file_path()).await;
+            let _ = tokio::fs::remove_file(get_ipc_port_path()).await;
+
+            if let Some(repo_root) = crate::update_checker::find_repo_root() {
+                let manifest = repo_root.join("mcp-server").join("Cargo.toml");
+                let _ = crate::update_checker::run_cargo_build(&manifest);
+            }
+            let _ = crate::update_checker::safe_reload_process();
             std::process::exit(0);
         }
 

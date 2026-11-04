@@ -1,5 +1,7 @@
 use crate::websocket_hub::{SharedHub, send_cdp_command};
 use crate::tools::visual::take_screenshot;
+use crate::tools::hud_state::{broadcast_hud_state, describe_pipeline_step, format_executing_cmd, normalize_intent_preview};
+use crate::tools::report_builder::{build_visual_report_bundle, ReportStepEntry};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -58,7 +60,6 @@ fn strip_step_prefix(line: &str) -> String {
             }
         }
     }
-    // Strip leading number dots like "1." or "1)"
     let mut chars = s.chars().peekable();
     if chars.peek().map_or(false, |c| c.is_ascii_digit()) {
         while chars.peek().map_or(false, |c| c.is_ascii_digit()) {
@@ -73,7 +74,6 @@ fn strip_step_prefix(line: &str) -> String {
 }
 
 /// Split input description into individual action clauses.
-/// Handles multi-line input, semicolons, and case-insensitive conjunctions ("then", "and then", ", and").
 fn split_into_clauses(input: &str) -> Vec<String> {
     let mut raw_lines = Vec::new();
     for line in input.lines() {
@@ -85,7 +85,6 @@ fn split_into_clauses(input: &str) -> Vec<String> {
 
     let mut result = Vec::new();
     for line in raw_lines {
-        // First split by semicolon
         let semi_splits: Vec<&str> = line.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
         for chunk in semi_splits {
             let mut remaining = chunk.to_string();
@@ -143,9 +142,8 @@ fn parse_single_step(text: &str) -> Option<Value> {
         }
     }
 
-    // 2. Fill inputs: "fill X with Y", "fill X as Y", "type Y into X", "type Y in X", "enter Y into X", "enter Y in X"
+    // 2. Fill inputs
     if lower.starts_with("fill ") || lower.starts_with("type ") || lower.starts_with("input ") || lower.starts_with("enter ") {
-        // e.g. "fill #username with admin" or "fill #username as admin"
         let with_split = lower.find(" with ").map(|p| (p, 6))
             .or_else(|| lower.find(" as ").map(|p| (p, 4)));
 
@@ -161,7 +159,6 @@ fn parse_single_step(text: &str) -> Option<Value> {
             }));
         }
 
-        // e.g. "type admin into #username" or "type admin in #username"
         let into_split = lower.find(" into ").map(|p| (p, 6))
             .or_else(|| lower.find(" in ").map(|p| (p, 4)));
 
@@ -182,8 +179,7 @@ fn parse_single_step(text: &str) -> Option<Value> {
     if lower.starts_with("click ") || lower.starts_with("tap ") || lower.starts_with("press button ") {
         let prefix_len = if lower.starts_with("click ") { 6 } else if lower.starts_with("tap ") { 4 } else { 13 };
         let mut target = trimmed[prefix_len..].trim();
-        
-        // Strip common natural prefixes like "on the ", "on ", "the "
+
         let target_lower = target.to_lowercase();
         if target_lower.starts_with("on the ") {
             target = target[7..].trim();
@@ -194,8 +190,7 @@ fn parse_single_step(text: &str) -> Option<Value> {
         }
 
         let mut unquoted = target.trim_matches('\'').trim_matches('"').trim();
-        
-        // If not in quotes, strip trailing "button", "link", "tab"
+
         let u_lower = unquoted.to_lowercase();
         if !target.starts_with('\'') && !target.starts_with('"') {
             if u_lower.ends_with(" button") {
@@ -231,7 +226,6 @@ fn parse_single_step(text: &str) -> Option<Value> {
         }
         let assert_lower = assertion_body.to_lowercase();
 
-        // Negative selector assertion: "is not visible", "does not exist", "is hidden"
         if assert_lower.contains("is not visible") || assert_lower.contains("does not exist") || assert_lower.contains("is hidden") || assert_lower.contains("not present") {
             let sel = assertion_body
                 .replace("is not visible", "")
@@ -248,7 +242,6 @@ fn parse_single_step(text: &str) -> Option<Value> {
             }));
         }
 
-        // Positive selector assertion: "is visible" or "exists"
         if assert_lower.contains("is visible") || assert_lower.contains("exists") {
             let sel = assertion_body.replace("is visible", "").replace("exists", "");
             let clean_sel = sel.trim().trim_matches('\'').trim_matches('"');
@@ -261,7 +254,6 @@ fn parse_single_step(text: &str) -> Option<Value> {
             }));
         }
 
-        // Negative text assertion: "does not contain", "doesn't contain"
         if assert_lower.contains("does not contain ") || assert_lower.contains("doesn't contain ") {
             let pos = assert_lower.find("contain ").unwrap_or(0);
             let target_text = assertion_body[pos + 8..].trim().trim_matches('\'').trim_matches('"');
@@ -274,7 +266,6 @@ fn parse_single_step(text: &str) -> Option<Value> {
             }));
         }
 
-        // Positive text assertion: "contains "
         if assert_lower.contains("contains ") {
             let pos = assert_lower.find("contains ").unwrap_or(0);
             let target_text = assertion_body[pos + 9..].trim().trim_matches('\'').trim_matches('"');
@@ -287,7 +278,6 @@ fn parse_single_step(text: &str) -> Option<Value> {
             }));
         }
 
-        // Explicit JS condition
         if assertion_body.contains("document.") || assertion_body.contains("window.") || assertion_body.contains("===") || assertion_body.contains("!==") {
             return Some(serde_json::json!({
                 "name": format!("Assert JS condition: {}", assertion_body),
@@ -297,7 +287,6 @@ fn parse_single_step(text: &str) -> Option<Value> {
             }));
         }
 
-        // Direct selector (starts with #, ., [)
         if assertion_body.starts_with('#') || assertion_body.starts_with('.') || assertion_body.starts_with('[') {
             let clean_sel = assertion_body.trim_matches('\'').trim_matches('"');
             return Some(serde_json::json!({
@@ -308,7 +297,6 @@ fn parse_single_step(text: &str) -> Option<Value> {
             }));
         }
 
-        // Quoted text or general text target
         let clean_text = assertion_body.trim_matches('\'').trim_matches('"');
         return Some(serde_json::json!({
             "name": format!("Assert page contains '{}'", clean_text),
@@ -380,7 +368,6 @@ fn parse_single_step(text: &str) -> Option<Value> {
         }));
     }
 
-    // If line is just a URL
     if let Some(url) = extract_url(trimmed) {
         return Some(serde_json::json!({
             "name": format!("Navigate to {}", url),
@@ -412,7 +399,6 @@ pub fn parse_description_into_steps(description: &str) -> Vec<Value> {
         }
     }
 
-    // Fallback: If no steps were parsed but a URL is present
     if steps.is_empty() {
         if let Some(url) = extract_url(description) {
             steps.push(serde_json::json!({
@@ -440,7 +426,7 @@ pub fn parse_description_into_steps(description: &str) -> Vec<Value> {
 }
 
 /// Step execution record.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StepExecutionRecord {
     pub step_index: usize,
     pub name: String,
@@ -465,8 +451,7 @@ async fn execute_step(state: SharedHub, tab_id: Option<u64>, step: &Value) -> Re
                 return Err(format!("Navigation to '{}' failed: {}", url, err_text));
             }
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            
-            // Wait for document ready with timeout protection
+
             let _ = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
                 send_cdp_command(state.clone(), tab_id, "Runtime.evaluate", serde_json::json!({
@@ -477,6 +462,19 @@ async fn execute_step(state: SharedHub, tab_id: Option<u64>, step: &Value) -> Re
             Ok(())
         }
         "click" => {
+            if let Some(cell) = step.get("quadrant").or_else(|| step.get("cell")).and_then(|v| v.as_str()) {
+                crate::tools::input::interact(
+                    state,
+                    tab_id,
+                    serde_json::json!({
+                        "action": "click",
+                        "quadrant": cell
+                    }),
+                )
+                .await?;
+                return Ok(());
+            }
+
             let selector = step.get("selector").and_then(|v| v.as_str()).unwrap_or("");
             let text = step.get("text").and_then(|v| v.as_str()).unwrap_or("");
             let aria_label = step.get("aria_label").and_then(|v| v.as_str()).unwrap_or("");
@@ -489,35 +487,36 @@ async fn execute_step(state: SharedHub, tab_id: Option<u64>, step: &Value) -> Re
 
             let click_expr = format!(
                 "(() => {{
+                    const isHud = (n) => !n || (n.nodeName || '').toLowerCase() === 'mcp-agent-hud' || n.id === '__mcp_agent_hud_host__' || (n.hasAttribute && n.hasAttribute('data-mcp-internal-ignore')) || (n.closest && n.closest('mcp-agent-hud, #__mcp_agent_hud_host__, [data-mcp-internal-ignore]'));
                     const sel = {sel};
                     const targetText = {target_text}.trim().toLowerCase();
                     const aria = {aria}.trim().toLowerCase();
                     let el = null;
                     if (aria) {{
-                        el = document.querySelector(`[aria-label=\"${{aria}}\" i]`);
+                        el = Array.from(document.querySelectorAll(`[aria-label=\"${{aria}}\" i]`)).find(e => !isHud(e)) || null;
                         if (!el) {{
-                            const svg = document.querySelector(`svg[aria-label=\"${{aria}}\" i]`);
+                            const svg = Array.from(document.querySelectorAll(`svg[aria-label=\"${{aria}}\" i]`)).find(e => !isHud(e));
                             if (svg) el = svg.closest('button, [role=\"button\"], a, div') || svg;
                         }}
                     }}
                     if (!el && sel && targetText) {{
-                        const list = Array.from(document.querySelectorAll(sel));
+                        const list = Array.from(document.querySelectorAll(sel)).filter(e => !isHud(e));
                         el = list.find(e => (e.innerText || '').trim().toLowerCase() === targetText)
                           || list.find(e => (e.innerText || '').toLowerCase().includes(targetText));
                     }}
                     if (!el && sel) {{
-                        el = document.querySelector(sel);
+                        el = Array.from(document.querySelectorAll(sel)).find(e => !isHud(e)) || null;
                     }}
                     if (!el && targetText) {{
-                        const candidates = Array.from(document.querySelectorAll('button, [role=\"button\"], a, input[type=\"button\"], input[type=\"submit\"], span, div'));
+                        const candidates = Array.from(document.querySelectorAll('button, [role=\"button\"], a, input[type=\"button\"], input[type=\"submit\"], span, div')).filter(e => !isHud(e));
                         el = candidates.find(e => (e.innerText || '').trim().toLowerCase() === targetText)
                           || candidates.find(e => (e.innerText || '').toLowerCase().includes(targetText));
                         if (el) {{
                             const clickable = el.closest('button, [role=\"button\"], a');
-                            if (clickable) el = clickable;
+                            if (clickable && !isHud(clickable)) el = clickable;
                         }}
                     }}
-                    if (!el) return false;
+                    if (!el || isHud(el)) return false;
                     el.scrollIntoView({{ block: 'center', inline: 'center' }});
                     el.click();
                     return true;
@@ -553,7 +552,6 @@ async fn execute_step(state: SharedHub, tab_id: Option<u64>, step: &Value) -> Re
         "fill_inputs" => {
             let fields = step.get("fields").cloned().unwrap_or(serde_json::json!([]));
             let res = crate::tools::input::fill_inputs(state.clone(), tab_id, serde_json::json!({ "fields": fields })).await?;
-            // Inspect fill results to verify all fields were located and populated
             if let Some(val_str) = res.get("result").and_then(|r| r.get("value")).and_then(|v| v.as_str()) {
                 if let Ok(items) = serde_json::from_str::<Vec<Value>>(val_str) {
                     for item in items {
@@ -619,7 +617,7 @@ async fn execute_step(state: SharedHub, tab_id: Option<u64>, step: &Value) -> Re
             let timeout_ms = step.get("timeout_ms").and_then(|v| v.as_u64()).unwrap_or(8000);
             let sel_json = serde_json::to_string(selector).unwrap_or("\"\"".to_string());
             let expr = format!(
-                "(() => {{ const el = document.querySelector({sel}); return !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length)); }})()",
+                "(() => {{ const el = document.querySelector({sel}); if (el && ((el.nodeName || '').toLowerCase() === 'mcp-agent-hud' || el.id === '__mcp_agent_hud_host__')) return false; return !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length)); }})()",
                 sel = sel_json
             );
             let start = Instant::now();
@@ -685,6 +683,10 @@ async fn execute_step(state: SharedHub, tab_id: Option<u64>, step: &Value) -> Re
             tokio::time::sleep(std::time::Duration::from_millis(duration_ms)).await;
             Ok(())
         }
+        "replay_curl" => {
+            crate::tools::curl_runner::replay_curl(state, tab_id, step.clone()).await?;
+            Ok(())
+        }
         "assert" => {
             check_assertion(state, tab_id, step).await
         }
@@ -697,7 +699,6 @@ async fn check_assertion(state: SharedHub, tab_id: Option<u64>, step: &Value) ->
     let timeout_ms = step.get("timeout_ms").and_then(|v| v.as_u64()).unwrap_or(3000);
     let negative = step.get("negative").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    // Resolve target expression, selector, or text from either explicit keys or generic "assertion" parameter
     let (expression, selector, text) = if step.get("expression").is_some() || step.get("selector").is_some() || step.get("text").is_some() {
         (
             step.get("expression").and_then(|v| v.as_str()),
@@ -756,7 +757,7 @@ async fn check_assertion(state: SharedHub, tab_id: Option<u64>, step: &Value) ->
         } else if let Some(sel) = selector {
             let sel_json = serde_json::to_string(sel).unwrap_or("\"\"".to_string());
             let dom_expr = format!(
-                "(() => {{ const el = document.querySelector({sel}); return !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length)); }})()",
+                "(() => {{ const el = document.querySelector({sel}); if (el && ((el.nodeName || '').toLowerCase() === 'mcp-agent-hud' || el.id === '__mcp_agent_hud_host__')) return false; return !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length)); }})()",
                 sel = sel_json
             );
             if let Ok(res) = send_cdp_command(state.clone(), tab_id, "Runtime.evaluate", serde_json::json!({
@@ -879,11 +880,19 @@ pub fn generate_markdown_summary(
 }
 
 /// Run an automated browser test from description or structured steps.
+/// Builds the full Visual Test & Feature Overview Document Pipeline:
+/// - Zero-base64 cloaked WebP step assets (`test_reports/<run_id>/assets/step_<n>.webp`, quality: 75)
+/// - Print-styled HTML report (`test_reports/<run_id>/overview.html`)
+/// - Silent CDP PDF export (`test_reports/<run_id>/overview.pdf`)
+/// - Openable & auto-print HTTP links on port 9222 (`http://127.0.0.1:9222/reports/<run_id>/overview.html?print=1`)
 pub async fn run_browser_test(state: SharedHub, tab_id: Option<u64>, params: Value) -> Result<Value, String> {
     let raw_name = params.get("test_name").and_then(|v| v.as_str()).unwrap_or("");
     let description = params.get("description").and_then(|v| v.as_str()).unwrap_or("");
     let full_page_screenshots = params.get("full_page_screenshots").and_then(|v| v.as_bool()).unwrap_or(false);
     let continue_on_failure = params.get("continue_on_failure").and_then(|v| v.as_bool()).unwrap_or(false);
+    let raw_intent = params.get("_intent").and_then(|v| v.as_str());
+    let has_explicit_intent = raw_intent.is_some();
+    let global_intent = normalize_intent_preview(raw_intent, "run_browser_test", &params);
 
     let test_name = if !raw_name.trim().is_empty() {
         slugify(raw_name)
@@ -895,23 +904,29 @@ pub async fn run_browser_test(state: SharedHub, tab_id: Option<u64>, params: Val
         "browser_test".to_string()
     };
 
-    // Determine output directory
     let epoch_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let default_dir_name = format!("{}_{}", test_name, epoch_secs);
+    let run_id = params
+        .get("run_id")
+        .and_then(|v| v.as_str())
+        .map(slugify)
+        .unwrap_or_else(|| format!("{}_{}", test_name, epoch_secs));
 
     let output_dir = if let Some(custom_dir) = params.get("output_dir").and_then(|v| v.as_str()) {
         PathBuf::from(custom_dir)
     } else {
-        Path::new("test_reports").join(&default_dir_name)
+        let base_reports = std::env::var("ONLYDOMS_REPORTS_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| Path::new("test_reports").to_path_buf());
+        base_reports.join(&run_id)
     };
 
-    tokio::fs::create_dir_all(&output_dir).await
-        .map_err(|e| format!("Failed to create test directory {}: {}", output_dir.display(), e))?;
+    let assets_dir = output_dir.join("assets");
+    tokio::fs::create_dir_all(&assets_dir).await
+        .map_err(|e| format!("Failed to create test assets directory {}: {}", assets_dir.display(), e))?;
 
-    // Determine steps: either from params["steps"] or parse from description
     let steps: Vec<Value> = if let Some(arr) = params.get("steps").and_then(|s| s.as_array()) {
         if !arr.is_empty() {
             arr.clone()
@@ -927,10 +942,12 @@ pub async fn run_browser_test(state: SharedHub, tab_id: Option<u64>, params: Val
     }
 
     let mut execution_records: Vec<StepExecutionRecord> = Vec::new();
+    let mut report_entries: Vec<ReportStepEntry> = Vec::new();
     let mut overall_passed = true;
     let mut passed_steps = 0;
     let mut failed_steps = 0;
     let suite_start = Instant::now();
+    let active_tid = tab_id.unwrap_or(1);
 
     for (idx, step) in steps.iter().enumerate() {
         let step_num = idx + 1;
@@ -941,6 +958,28 @@ pub async fn run_browser_test(state: SharedHub, tab_id: Option<u64>, params: Val
         let should_screenshot = step.get("screenshot").and_then(|v| v.as_bool()).unwrap_or(true);
         let step_full_page = step.get("full_page").and_then(|v| v.as_bool()).unwrap_or(full_page_screenshots);
         let optional = step.get("optional").and_then(|v| v.as_bool()).unwrap_or(false);
+        let step_intent = step
+            .get("_intent")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&global_intent);
+        let step_cmd_desc = describe_pipeline_step(step);
+        let executing_cmd = format_executing_cmd(&step_cmd_desc, active_tid, Some(&test_name));
+        let step_rpc_id = format!("{}_step_{}", run_id, step_num);
+
+        // Broadcast HUD state and record step rpc_id for 3000ms optimistic cURL correlation
+        broadcast_hud_state(
+            state.clone(),
+            active_tid,
+            Some(&test_name),
+            step_intent,
+            &step_cmd_desc,
+            "running",
+            Some(&step_rpc_id),
+            Some("run_browser_test"),
+            None,
+            has_explicit_intent,
+        )
+        .await;
 
         let step_start = Instant::now();
         let step_res = execute_step(state.clone(), tab_id, step).await;
@@ -960,26 +999,34 @@ pub async fn run_browser_test(state: SharedHub, tab_id: Option<u64>, params: Val
             }
         };
 
-        // Capture visual evidence
+        // Zero-Base64 Disk Asset Pipeline: save cloaked compositor screenshot (webp, quality: 75)
+        // directly to `test_reports/<run_id>/assets/step_<n>.webp`
         let mut screenshot_file = None;
         if should_screenshot || status == "failed" {
-            let filename = if status == "passed" {
-                format!("step_{:02}_{}.png", step_num, slugify(step_name))
-            } else {
-                format!("step_{:02}_{}_FAILED.png", step_num, slugify(step_name))
-            };
-            let full_path = output_dir.join(&filename);
+            let rel_asset = format!("assets/step_{}.webp", step_num);
+            let full_path = output_dir.join(&rel_asset);
             let screenshot_params = serde_json::json!({
                 "full_page": step_full_page,
                 "save_path": full_path.to_str().unwrap_or(""),
-                "format": "png",
+                "format": "webp",
+                "quality": 75,
                 "include_base64": false
             });
 
-            if let Ok(_) = take_screenshot(state.clone(), tab_id, screenshot_params).await {
-                screenshot_file = Some(filename);
+            if take_screenshot(state.clone(), tab_id, screenshot_params).await.is_ok() {
+                screenshot_file = Some(rel_asset);
             }
         }
+
+        // Collect optimistic cURL snippets correlated with this step's rpc_id
+        let curl_snippets = {
+            let lock = state.lock().await;
+            lock.network_harvester
+                .list_requests_by_rpc_id(active_tid, &step_rpc_id)
+                .into_iter()
+                .map(|r| r.curl_command)
+                .collect::<Vec<String>>()
+        };
 
         execution_records.push(StepExecutionRecord {
             step_index: step_num,
@@ -988,18 +1035,30 @@ pub async fn run_browser_test(state: SharedHub, tab_id: Option<u64>, params: Val
             status: status.to_string(),
             duration_ms: step_duration,
             error: err_msg.clone(),
-            screenshot_file,
+            screenshot_file: screenshot_file.clone(),
         });
 
-        // Abort on failure unless continue_on_failure is enabled
+        report_entries.push(ReportStepEntry {
+            step_number: step_num,
+            name: step_name.to_string(),
+            action: action.to_string(),
+            intent: step_intent.to_string(),
+            executing_cmd,
+            status: status.to_string(),
+            duration_ms: step_duration,
+            error: err_msg.clone(),
+            asset_rel_path: screenshot_file,
+            curl_snippets,
+        });
+
         if status == "failed" && !optional && !continue_on_failure {
-            // Record remaining steps as skipped
             for remaining_idx in (idx + 1)..steps.len() {
                 let rem_step = &steps[remaining_idx];
                 let rem_name = rem_step.get("name").and_then(|v| v.as_str()).unwrap_or_else(|| {
                     rem_step.get("action").and_then(|v| v.as_str()).unwrap_or("step")
                 });
                 let rem_action = rem_step.get("action").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let rem_cmd = format_executing_cmd(&describe_pipeline_step(rem_step), active_tid, Some(&test_name));
                 execution_records.push(StepExecutionRecord {
                     step_index: remaining_idx + 1,
                     name: rem_name.to_string(),
@@ -1008,6 +1067,18 @@ pub async fn run_browser_test(state: SharedHub, tab_id: Option<u64>, params: Val
                     duration_ms: 0,
                     error: None,
                     screenshot_file: None,
+                });
+                report_entries.push(ReportStepEntry {
+                    step_number: remaining_idx + 1,
+                    name: rem_name.to_string(),
+                    action: rem_action.to_string(),
+                    intent: global_intent.clone(),
+                    executing_cmd: rem_cmd,
+                    status: "skipped".to_string(),
+                    duration_ms: 0,
+                    error: None,
+                    asset_rel_path: None,
+                    curl_snippets: Vec::new(),
                 });
             }
             break;
@@ -1033,10 +1104,26 @@ pub async fn run_browser_test(state: SharedHub, tab_id: Option<u64>, params: Val
     tokio::fs::write(&summary_path, &summary_md).await
         .map_err(|e| format!("Failed to write test_summary.md: {}", e))?;
 
+    // Compile overview.html and silent CDP overview.pdf via report_builder
+    let report_bundle = build_visual_report_bundle(
+        state.clone(),
+        tab_id,
+        &output_dir,
+        &run_id,
+        &test_name,
+        &global_intent,
+        overall_passed,
+        total_duration_ms,
+        &report_entries,
+    )
+    .await?;
+
     // Generate JSON report
     let report_json = serde_json::json!({
+        "run_id": run_id,
         "test_name": test_name,
         "description": description,
+        "_intent": global_intent,
         "passed": overall_passed,
         "total_steps": steps.len(),
         "passed_steps": passed_steps,
@@ -1044,6 +1131,13 @@ pub async fn run_browser_test(state: SharedHub, tab_id: Option<u64>, params: Val
         "skipped_steps": skipped_steps,
         "duration_ms": total_duration_ms,
         "output_dir": output_dir.to_str().unwrap_or(""),
+        "overview_html_path": report_bundle.overview_html_path,
+        "overview_pdf_path": report_bundle.overview_pdf_path,
+        "report_links": {
+            "html_report": report_bundle.html_report_url,
+            "pdf_document": report_bundle.pdf_document_url,
+            "instant_print": report_bundle.instant_print_url
+        },
         "steps": execution_records
     });
     let report_content = serde_json::to_string_pretty(&report_json).unwrap_or("{}".to_string());
@@ -1057,7 +1151,9 @@ pub async fn run_browser_test(state: SharedHub, tab_id: Option<u64>, params: Val
 
     Ok(serde_json::json!({
         "success": true,
+        "run_id": run_id,
         "test_name": test_name,
+        "_intent": global_intent,
         "passed": overall_passed,
         "total_steps": steps.len(),
         "passed_steps": passed_steps,
@@ -1067,6 +1163,13 @@ pub async fn run_browser_test(state: SharedHub, tab_id: Option<u64>, params: Val
         "output_dir": output_dir.to_str().unwrap_or(""),
         "summary_markdown_path": summary_path.to_str().unwrap_or(""),
         "report_json_path": report_path.to_str().unwrap_or(""),
+        "overview_html_path": report_bundle.overview_html_path,
+        "overview_pdf_path": report_bundle.overview_pdf_path,
+        "report_links": {
+            "html_report": report_bundle.html_report_url,
+            "pdf_document": report_bundle.pdf_document_url,
+            "instant_print": report_bundle.instant_print_url
+        },
         "step_screenshots": screenshots
     }))
 }
@@ -1146,22 +1249,18 @@ mod tests {
         let steps = parse_description_into_steps(desc);
         assert_eq!(steps.len(), 4);
 
-        // 1. Negative selector
         assert_eq!(steps[0]["action"], "assert");
         assert_eq!(steps[0]["selector"], "#error-banner");
         assert_eq!(steps[0]["negative"], true);
 
-        // 2. Negative text
         assert_eq!(steps[1]["action"], "assert");
         assert_eq!(steps[1]["text"], "Server Error");
         assert_eq!(steps[1]["negative"], true);
 
-        // 3. Positive text with 'contains'
         assert_eq!(steps[2]["action"], "assert");
         assert_eq!(steps[2]["text"], "Success");
         assert_eq!(steps[2]["negative"], false);
 
-        // 4. Quoted text assertion
         assert_eq!(steps[3]["action"], "assert");
         assert_eq!(steps[3]["text"], "Welcome User");
         assert_eq!(steps[3]["negative"], false);
@@ -1186,7 +1285,7 @@ mod tests {
                 status: "passed".to_string(),
                 duration_ms: 350,
                 error: None,
-                screenshot_file: Some("step_01_navigate.png".to_string()),
+                screenshot_file: Some("assets/step_1.webp".to_string()),
             },
             StepExecutionRecord {
                 step_index: 2,
@@ -1195,7 +1294,7 @@ mod tests {
                 status: "failed".to_string(),
                 duration_ms: 120,
                 error: Some("Element not found".to_string()),
-                screenshot_file: Some("step_02_click_FAILED.png".to_string()),
+                screenshot_file: Some("assets/step_2.webp".to_string()),
             },
             StepExecutionRecord {
                 step_index: 3,
@@ -1225,7 +1324,7 @@ mod tests {
         assert!(md.contains("Verify checkout flow"));
         assert!(md.contains("- **Skipped**: 1"));
         assert!(md.contains("⏭️ Skipped"));
-        assert!(md.contains("step_01_navigate.png"));
+        assert!(md.contains("assets/step_1.webp"));
         assert!(md.contains("Element not found"));
     }
 

@@ -1,19 +1,21 @@
-# Automated Testing Engine (`run_browser_test`)
+# Automated Testing & Visual Overview Pipeline (`run_browser_test`)
 
-The OnlyDOMs automated testing engine lets AI coding agents and developers convert plain English defect or feature descriptions into deterministic browser validation runs with visual proof.
+The OnlyDOMs automated testing engine (`mcp-server/src/tools/testing.rs` & `report_builder.rs`) lets AI coding agents and developers convert plain English defect or feature descriptions into deterministic browser validation runs with a full **SS -> HTML -> PDF -> Openable Print Link** pipeline.
 
 ---
 
 ## 1. Overview
 
-Rather than forcing agents to write brittle Playwright or Cypress test scripts from scratch, agents can call `run_browser_test` with a human description or structured steps:
+Agents call `run_browser_test` with a 180-char `_intent` preview and a natural language description or structured steps:
 
 ```json
 {
   "name": "run_browser_test",
   "arguments": {
+    "_intent": "Validate SPRING25 promo code discount calculation on staging cart and generate PDF overview",
+    "run_id": "checkout_discount_verification",
     "test_name": "checkout_discount_code_verification",
-    "description": "1. Navigate to https://store.example.com/cart\n2. Fill input[name='coupon'] with 'SPRING25'\n3. Click button.apply-coupon\n4. Assert .discount-applied is visible\n5. Assert total matches expected discount",
+    "description": "1. Navigate to https://store.example.com/cart\n2. Fill input[name='coupon'] with 'SPRING25'\n3. Click button.apply-coupon\n4. Assert .discount-applied is visible",
     "full_page_screenshots": false
   }
 }
@@ -21,54 +23,20 @@ Rather than forcing agents to write brittle Playwright or Cypress test scripts f
 
 ---
 
-## 2. Execution Pipeline
+## 2. Visual Overview Document Pipeline (`SS -> HTML -> PDF -> Print Link`)
 
 When `run_browser_test` is invoked:
 
-1. **Step Decomposition**:
-   - The engine parses the natural language description or step list into atomic test steps.
-2. **Deterministic Step Execution**:
-   - Navigates, fills inputs, and performs semantic clicks with auto-scroll and retry resilience.
-3. **Compositor Visual Capture**:
-   - Captures high-resolution, compositor-level screenshots at each intermediate step and assertion point.
-4. **Artifact Generation**:
-   - Writes all evidence directly to disk in `test_reports/<test_name>_<timestamp>/`:
-     - `step_1_navigate.png`
-     - `step_2_fill_coupon.png`
-     - `step_3_apply_click.png`
-     - `step_4_assertion_verified.png`
-     - `test_summary.md` (Human-readable markdown report)
-     - `test_report.json` (Structured machine-readable test log)
-
----
-
-## 3. Sample Generated Report (`test_summary.md`)
-
-```markdown
-# Test Execution Summary: checkout_discount_code_verification
-
-- **Status**: PASSED
-- **Timestamp**: 2026-10-28T06:15:22Z
-- **Duration**: 2,340 ms
-- **Steps Executed**: 4 / 4
-
-## Step Details
-1. **Navigate**: `https://store.example.com/cart` — ✔ Succeeded (820ms)
-2. **Fill Input**: `input[name='coupon']` = 'SPRING25' — ✔ Succeeded (140ms)
-3. **Click**: `button.apply-coupon` — ✔ Succeeded (310ms)
-4. **Assert Visible**: `.discount-applied` — ✔ Succeeded (210ms)
-
-## Visual Evidence
-- Step 1: `test_reports/checkout_.../step_1.png`
-- Step 2: `test_reports/checkout_.../step_2.png`
-- Step 3: `test_reports/checkout_.../step_3.png`
-- Step 4: `test_reports/checkout_.../step_4.png`
-```
-
----
-
-## 4. Key Advantages for AI Coding Agents
-
-- **Zero Prompt Image Bloat**: Screenshots are saved directly to disk rather than fed back to the LLM as megabytes of base64 text, conserving context window tokens.
-- **Fail-Fast Error Reporting**: If an assertion or selector fails, the engine captures a snapshot of the exact failure state with the DOM stack and returns an actionable diagnostic message.
-- **Continuous Integration (CI) Ready**: Run the test engine via CLI in headless or headed environments to validate PRs before merging.
+1. **Pre-Flight & Step-by-Step HUD Telemetry (`HUD_STATE_UPDATE`)**:
+   - Broadcasts `Executing :: <step.action>(<target>) on Tab :: #<id> (<title>)` before each step and correlates any XHR/Fetch/Document network requests within `3000ms` via `step_rpc_id`.
+2. **Zero-Base64 Disk Asset Pipeline (`report_builder.rs`)**:
+   - Saves each step's cloaked compositor screenshot (`webp`, `quality: 75`) directly to `test_reports/<run_id>/assets/step_<n>.webp`.
+3. **Self-Contained Print-Styled HTML Compiler (`overview.html`)**:
+   - Compiles step intents (`_intent`), executed commands, correlated optimistic cURL snippets, and `<img src="assets/step_<n>.webp">` into `test_reports/<run_id>/overview.html` with `@media print` page-break rules and zero HUD traces.
+4. **Silent CDP `Page.printToPDF` Generation (`overview.pdf`)**:
+   - Renders `test_reports/<run_id>/overview.pdf` silently with `printBackground: true, preferCSSPageSize: true`.
+5. **Openable & Auto-Print Links on Daemon Port `9222` (`websocket_hub.rs`)**:
+   - **HTML Report**: `http://127.0.0.1:9222/reports/<run_id>/overview.html`
+   - **PDF Document**: `http://127.0.0.1:9222/reports/<run_id>/overview.pdf`
+   - **Instant Print Dialog Link**: `http://127.0.0.1:9222/reports/<run_id>/overview.html?print=1` (auto-triggers `window.print()` on load).
+   - Also writes `test_summary.md` and `test_report.json` in `test_reports/<run_id>/`.

@@ -1,4 +1,5 @@
 use crate::websocket_hub::{SharedHub, send_cdp_command, send_hub_command};
+use crate::tools::hud_state::{broadcast_hud_state, describe_pipeline_step, normalize_intent_preview};
 use serde_json::Value;
 use std::time::{Duration, Instant};
 
@@ -13,12 +14,40 @@ pub async fn execute_browser_pipeline(
         Some(_) => return Err("The 'steps' array is empty. Please provide at least one action.".to_string()),
         None => return Err("Missing required property 'steps' (or 'actions') array in execute_browser_pipeline.".to_string()),
     };
+    let raw_intent = params.get("_intent").and_then(|v| v.as_str());
+    let has_explicit_intent = raw_intent.is_some();
+    let pipeline_intent = normalize_intent_preview(raw_intent, "execute_browser_pipeline", &params);
+    let tab_title = params.get("tab_title").and_then(|v| v.as_str());
+
     let mut final_url = String::new();
     let mut screenshot = None;
     let mut step_results = Vec::new();
-    
+
     for (idx, step) in steps.iter().enumerate() {
         let action = step.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        let step_intent = step
+            .get("_intent")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&pipeline_intent);
+        let step_desc = describe_pipeline_step(step);
+        let step_rpc_id = format!("pipeline_step_{}", idx + 1);
+        let active_tid = current_tab.unwrap_or(1);
+
+        // Emit per-step HUD command ticker crossfade update
+        broadcast_hud_state(
+            state.clone(),
+            active_tid,
+            tab_title,
+            step_intent,
+            &step_desc,
+            "running",
+            Some(&step_rpc_id),
+            Some("execute_browser_pipeline"),
+            None,
+            has_explicit_intent,
+        )
+        .await;
+
         match action {
             "navigate" => {
                 let url = step.get("url").and_then(|v| v.as_str()).unwrap_or("");
@@ -32,7 +61,7 @@ pub async fn execute_browser_pipeline(
                         cdp_res?;
                     }
                 }
-                
+
                 // Resilient wait for frame/load
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 step_results.push(serde_json::json!({ "step": idx, "action": "navigate", "status": "ok" }));
@@ -60,7 +89,7 @@ pub async fn execute_browser_pipeline(
 
                 while start.elapsed().as_millis() as u64 <= timeout_ms {
                     let expr = format!(
-                        "(() => {{ const el = document.querySelector('{}'); return !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length)); }})()",
+                        "(() => {{ const el = document.querySelector('{}'); if (el && (el.nodeName.toLowerCase() === 'mcp-agent-hud' || el.id === '__mcp_agent_hud_host__')) return false; return !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length)); }})()",
                         selector.replace('\'', "\\'")
                     );
                     if let Ok(val) = send_cdp_command(state.clone(), current_tab, "Runtime.evaluate", serde_json::json!({
@@ -121,6 +150,27 @@ pub async fn execute_browser_pipeline(
                 step_results.push(serde_json::json!({ "step": idx, "action": "wait_network_idle" }));
             }
             "click" => {
+                // Support quadrant/cell click in pipeline (e.g. "P9") with HUD hit-test passthrough
+                if let Some(cell) = step.get("quadrant").or_else(|| step.get("cell")).and_then(|v| v.as_str()) {
+                    let res = crate::tools::input::interact(
+                        state.clone(),
+                        current_tab,
+                        serde_json::json!({
+                            "action": "click",
+                            "quadrant": cell
+                        }),
+                    )
+                    .await?;
+                    step_results.push(serde_json::json!({
+                        "step": idx,
+                        "action": "click",
+                        "clicked": true,
+                        "quadrant": cell,
+                        "result": res
+                    }));
+                    continue;
+                }
+
                 let selector = step.get("selector").and_then(|v| v.as_str()).unwrap_or("");
                 let text = step.get("text").and_then(|v| v.as_str()).unwrap_or("");
                 let aria_label = step.get("aria_label").and_then(|v| v.as_str()).unwrap_or("");
@@ -129,42 +179,45 @@ pub async fn execute_browser_pipeline(
                 let start = Instant::now();
                 let mut clicked = false;
 
-                // Resilient semantic click with wait & retry
+                // Resilient semantic click with wait & retry and HUD exclusion guard
                 while start.elapsed().as_millis() as u64 <= timeout_ms {
                     let click_expr = format!(
                         "(() => {{
+                            const isHud = (n) => !n || (n.nodeName || '').toLowerCase() === 'mcp-agent-hud' || n.id === '__mcp_agent_hud_host__' || (n.hasAttribute && n.hasAttribute('data-mcp-internal-ignore')) || (n.closest && n.closest('mcp-agent-hud, #__mcp_agent_hud_host__, [data-mcp-internal-ignore]'));
                             const sel = '{}';
                             const targetText = '{}'.trim().toLowerCase();
                             const aria = '{}'.trim().toLowerCase();
-                            
+
                             let el = null;
                             if (aria) {{
-                                el = document.querySelector(`[aria-label=\"${{aria}}\" i]`);
+                                const ariaList = Array.from(document.querySelectorAll(`[aria-label=\"${{aria}}\" i]`)).filter(e => !isHud(e));
+                                el = ariaList[0] || null;
                                 if (!el) {{
-                                    const svg = document.querySelector(`svg[aria-label=\"${{aria}}\" i]`);
+                                    const svg = Array.from(document.querySelectorAll(`svg[aria-label=\"${{aria}}\" i]`)).find(e => !isHud(e));
                                     if (svg) {{
                                         el = svg.closest('button, [role=\"button\"], a, div') || svg;
                                     }}
                                 }}
                             }}
                             if (!el && sel && targetText) {{
-                                const list = Array.from(document.querySelectorAll(sel));
+                                const list = Array.from(document.querySelectorAll(sel)).filter(e => !isHud(e));
                                 el = list.find(e => (e.innerText || '').trim().toLowerCase() === targetText)
                                   || list.find(e => (e.innerText || '').toLowerCase().includes(targetText));
                             }}
                             if (!el && sel) {{
-                                el = document.querySelector(sel);
+                                const list = Array.from(document.querySelectorAll(sel)).filter(e => !isHud(e));
+                                el = list[0] || null;
                             }}
                             if (!el && targetText) {{
-                                const candidates = Array.from(document.querySelectorAll('button, [role=\"button\"], a, input[type=\"button\"], input[type=\"submit\"], span, div'));
+                                const candidates = Array.from(document.querySelectorAll('button, [role=\"button\"], a, input[type=\"button\"], input[type=\"submit\"], span, div')).filter(e => !isHud(e));
                                 el = candidates.find(e => (e.innerText || '').trim().toLowerCase() === targetText)
                                   || candidates.find(e => (e.innerText || '').toLowerCase().includes(targetText));
                                 if (el) {{
                                     const clickable = el.closest('button, [role=\"button\"], a');
-                                    if (clickable) el = clickable;
+                                    if (clickable && !isHud(clickable)) el = clickable;
                                 }}
                             }}
-                            if (!el) return false;
+                            if (!el || isHud(el)) return false;
                             el.scrollIntoView({{ block: 'center', inline: 'center' }});
                             el.click();
                             return true;
@@ -209,6 +262,7 @@ pub async fn execute_browser_pipeline(
                             target = document.querySelector(sel);
                         }} else {{
                             const containers = Array.from(document.querySelectorAll('*')).filter(el => {{
+                                if ((el.nodeName || '').toLowerCase() === 'mcp-agent-hud' || el.id === '__mcp_agent_hud_host__') return false;
                                 const style = window.getComputedStyle(el);
                                 const overflow = style.overflowY || style.overflow;
                                 return (overflow === 'auto' || overflow === 'scroll') && el.scrollHeight > el.clientHeight;
@@ -305,18 +359,18 @@ pub async fn execute_browser_pipeline(
                 let format = step.get("format").and_then(|v| v.as_str()).unwrap_or("png");
                 let quality = step.get("quality").and_then(|v| v.as_u64());
                 let save_path = step.get("save_path").and_then(|v| v.as_str());
-                let mut params = serde_json::json!({
+                let mut s_params = serde_json::json!({
                     "full_page": full_page,
                     "format": format,
                     "include_base64": true
                 });
                 if let Some(q) = quality {
-                    params["quality"] = serde_json::json!(q);
+                    s_params["quality"] = serde_json::json!(q);
                 }
                 if let Some(sp) = save_path {
-                    params["save_path"] = serde_json::json!(sp);
+                    s_params["save_path"] = serde_json::json!(sp);
                 }
-                if let Ok(res) = crate::tools::visual::take_screenshot(state.clone(), current_tab, params).await {
+                if let Ok(res) = crate::tools::visual::take_screenshot(state.clone(), current_tab, s_params).await {
                     if let Some(b64) = res.get("base64_image").and_then(|v| v.as_str()) {
                         screenshot = Some(b64.to_string());
                     }
@@ -335,10 +389,45 @@ pub async fn execute_browser_pipeline(
                 }
                 step_results.push(serde_json::json!({ "step": idx, "action": "capture_grid_screenshot" }));
             }
+            "print_to_pdf" => {
+                let res = crate::tools::visual::print_to_pdf(state.clone(), current_tab, step.clone()).await?;
+                step_results.push(serde_json::json!({
+                    "step": idx,
+                    "action": "print_to_pdf",
+                    "status": "ok",
+                    "result": res
+                }));
+            }
+            "handle_dialog" => {
+                let accept = step.get("accept").and_then(|v| v.as_bool()).unwrap_or(true);
+                let action_str = if accept { "accept" } else { "dismiss" };
+                let mut dialog_args = serde_json::json!({
+                    "action": action_str,
+                });
+                if let Some(prompt) = step.get("prompt_text").or_else(|| step.get("promptText")).and_then(|v| v.as_str()) {
+                    dialog_args["prompt_text"] = serde_json::json!(prompt);
+                }
+                let res = crate::tools::dialog::handle_dialog(state.clone(), current_tab, dialog_args).await?;
+                step_results.push(serde_json::json!({
+                    "step": idx,
+                    "action": "handle_dialog",
+                    "status": "ok",
+                    "result": res
+                }));
+            }
+            "replay_curl" => {
+                let res = crate::tools::curl_runner::replay_curl(state.clone(), current_tab, step.clone()).await?;
+                step_results.push(serde_json::json!({
+                    "step": idx,
+                    "action": "replay_curl",
+                    "status": "ok",
+                    "result": res
+                }));
+            }
             _ => {}
         }
     }
-    
+
     let res = send_cdp_command(state.clone(), current_tab, "Runtime.evaluate", serde_json::json!({
         "expression": "window.location.href",
         "returnByValue": true
@@ -346,11 +435,12 @@ pub async fn execute_browser_pipeline(
     if let Ok(val) = res {
         final_url = val.get("result").and_then(|r| r.get("value")).and_then(|v| v.as_str()).unwrap_or("").to_string();
     }
-    
+
     let mut result = serde_json::json!({
         "success": true,
         "final_url": final_url,
-        "steps_executed": step_results
+        "steps_executed": step_results,
+        "_intent": pipeline_intent
     });
     if let Some(s) = screenshot {
         result.as_object_mut().unwrap().insert("screenshot".to_string(), serde_json::json!(s));

@@ -1,87 +1,87 @@
 ---
 name: onlydoms
-description: High-performance browser automation MCP server purpose-built for agentic SDLC and autonomous web operations. Interact with live Chrome tabs, inspect sanitized DOM, run compound pipelines, execute automated visual tests, fill forms across modern frameworks, and debug authenticated web apps with radical token efficiency.
+description: High-performance Chrome browser automation, DOM inspection, optimistic cURL network replay, and visual PDF test reporting via OnlyDOMs MCP and CLI. Use whenever the user asks to automate Chrome, open or interact with websites, inspect live DOM, fill forms, run automated browser tests, generate HTML or PDF test overview reports, or capture and replay network cURL requests.
 ---
 
 # Role & Operational Protocol: OnlyDOMs Chrome Automation
 
 You have access to **OnlyDOMs**, a high-performance browser automation MCP server providing browser-wide, multi-tab control of Google Chrome via Chrome DevTools Protocol (CDP) on `127.0.0.1:9222`.
 
----
-
 ## 1. Pre-Flight Health Check & Multi-Chat Architecture
 
 OnlyDOMs uses a **Decoupled Daemon + Multiplexed Client Architecture**:
-- A single long-lived daemon owns the WebSocket connection to Google Chrome on `127.0.0.1:9222`.
+
+- A single long-lived daemon owns the WebSocket connection to Google Chrome on `127.0.0.1:9222` and serves visual test reports on `http://127.0.0.1:9222/reports/<run_id>/`.
 - When an AI agent starts a conversation, the MCP proxy connects directly to the shared daemon (auto-spawning it if needed).
-- Multiple chat windows/agents run concurrently without connection conflicts or dropping browser sessions upon chat termination.
+- Multiple chat windows and agents run concurrently without connection conflicts or dropping browser sessions upon chat termination.
 
 1. **Check Daemon Status**:
-   - Check status via:
-     `onlydoms status` (or path to compiled binary `mcp-server/target/release/onlydoms status`)
-   - **If NOT running**:
-     - The MCP proxy automatically auto-spawns the daemon on demand, or start it explicitly with:
-       `onlydoms daemon --port 9222` (or `mcp-server/target/release/onlydoms daemon --port 9222`)
-   - **If running**: Status outputs active port, extension status, and active tab locks.
+
+   - Check status via `onlydoms status` (or `mcp-server/target/release/onlydoms status`).
+   - If NOT running, the MCP proxy auto-spawns the daemon on demand, or start it explicitly with `onlydoms daemon --port 9222`.
+   - If running, status outputs active port, extension status, and active tab locks.
 
 2. **Browser-Wide Extension Connection**:
-   - The session operates **browser-wide** across all tabs; you do not need to attach tabs one-by-one.
-   - If any tool returns `"No active browser session detected"`:
-     - Stop immediately and instruct the user:
-       > ⚠️ **OnlyDOMs Chrome extension is disconnected.**
-       > Please ensure the OnlyDOMs extension icon in Chrome shows 🟢 **Connected** (Port `9222`).
+
+   - The session operates browser-wide across all tabs; you do not need to attach tabs one-by-one.
+   - If any tool returns `"No active browser session detected"`, stop immediately and instruct the user:
+     > ⚠️ **OnlyDOMs Chrome extension is disconnected.**
+     > Please ensure the OnlyDOMs extension icon in Chrome shows 🟢 **Connected** (Port `9222`).
 
 3. **Execution Mode (MCP Tools vs Direct CLI)**:
-   - When inside an active MCP environment, invoke the native tools (`execute_browser_pipeline`, `create_tab`, `evaluate_expression`, etc.).
+
+   - When inside an active MCP environment, invoke the native tools (`execute_browser_pipeline`, `run_browser_test`, `replay_curl`, `print_to_pdf`, `create_tab`, `evaluate_expression`, etc.).
    - If MCP tools are detached or operating from terminal, use first-class CLI commands:
      - Open URL: `onlydoms open <url>`
      - List tabs: `onlydoms tabs`
      - Evaluate JS: `onlydoms eval "<expr>"`
      - Run pipeline: `onlydoms pipeline '<steps_json>'`
-     *(Never write ad-hoc Python or shell wrappers)*
-
----
 
 ## 2. Multi-Agent Tab Isolation & Lock Protection
 
-OnlyDOMs guarantees **strict tab isolation** between concurrent agents:
-1. **Exclusive Tab Locks**:
-   - When an agent works on a tab (via pipeline, navigation, input, testing, or selection), that tab is exclusively leased to that agent.
-   - Another agent **cannot intercept or execute commands on the same tab**. Any attempt by a second agent to switch to a locked tab will return a collision-prevention error.
-2. **Concurrent Agents Work in Separate Tabs**:
-   - If Agent 1 is working on Tab A, Agent 2 automatically starts or resumes work in an unreserved tab or automatically provisions a new tab (`create_tab`).
-   - `list_browser_sessions` shows `is_locked`, `locked_by_current_agent`, and `locked_by_other_agent` so agents can identify available vs. busy tabs.
-3. **Automatic Lock Cleanup**:
-   - When an agent finishes or closes its chat session, its tab locks are automatically freed for other agents or the user.
+OnlyDOMs guarantees strict tab isolation between concurrent agents:
 
----
+1. **Exclusive Tab Locks**:
+
+   - When an agent works on a tab (via pipeline, navigation, input, testing, or selection), that tab is exclusively leased to that agent.
+   - Another agent cannot intercept or execute commands on the same tab.
+
+2. **Concurrent Agents Work in Separate Tabs**:
+
+   - If Agent 1 is working on Tab A, Agent 2 automatically starts or resumes work in an unreserved tab or provisions a new tab (`create_tab`).
+   - `list_browser_sessions` shows `is_locked`, `locked_by_current_agent`, and `locked_by_other_agent`.
+
+3. **Automatic Lock Cleanup**:
+
+   - When an agent finishes or closes its chat session, its tab locks are automatically freed.
 
 ## 3. Intelligent Tab Management (New Tab vs In-Session Navigation)
 
 Before navigating to an external URL, inspect the active tab's URL:
 
 1. **New Tab Case (Preserve User Work)**:
-   - If the active tab has an active user webpage (e.g. `docs.google.com`, `github.com`, etc.) and the user's intent is to open a **new website or independent task** (e.g., *"go to instagram"*, *"open youtube"*, *"search google for X"*):
-   - **Do NOT overwrite the user's active page.** Call `create_tab` (or the `new_tab` pipeline action) to perform the action in a fresh tab.
+
+   - If the active tab has an active user webpage (e.g. `docs.google.com`, `github.com`) and the user's intent is to open a new website or independent task, do NOT overwrite the user's active page. Call `create_tab` (or the `new_tab` pipeline action) to perform the action in a fresh tab.
 
 2. **Clean Slate Case**:
-   - If the active tab is `chrome://newtab/`, `about:blank`, or an empty tab:
-   - Execute the request directly in the current tab.
+
+   - If the active tab is `chrome://newtab/`, `about:blank`, or an empty tab, execute the request directly in the current tab.
 
 3. **In-Session Navigation Case**:
-   - If the user's intent is to navigate within the existing website, flow, or task (e.g., *"click settings"*, *"go to my profile"*, *"navigate back"*, *"proceed to checkout"*):
-   - Always perform the action in the **current tab**, maintaining context and login state.
 
----
+   - If the user's intent is to navigate within the existing website, flow, or task (e.g. clicking settings, going to profile, proceeding to checkout), perform the action in the current tab to maintain context and login state.
 
-## 4. Resilient Batch Operations (Pipeline Protocol)
+## 4. Resilient Batch Operations (Pipeline Protocol) & Task Intent Preview
 
-**Always prefer `execute_browser_pipeline`** over individual atomic tool calls. It batches multi-step operations into a single turn with built-in awaits, auto-scrolling, semantic targeting, and retry resilience. Target a **1 to 2 compound turn ceiling** for standard workflows.
+**Task Intent Preview Rule (180-Char / 30-Word Ceiling)**: Before invoking any MCP tool, always output a single one-line preview in chat (`> 🎯 **Intent:** <up to 30 words / 180 chars>`) AND pass the exact same string in the `"_intent"` parameter of the tool call so the Chrome Floating Pill displays your intent in real time with zero extra tool turns.
+
+**Always prefer `execute_browser_pipeline`** over individual atomic tool calls. It batches multi-step operations into a single turn with built-in awaits, auto-scrolling, semantic targeting, live HUD command ticker updates (`Executing :: <step.action>(<target>) on Tab :: #<tab_id> (<tab_title>)`), and retry resilience. Target a **1 to 2 compound turn ceiling** for standard workflows.
 
 ### Pipeline Schema:
 ```json
 {
-  "tab_id": 12345, // optional (defaults to agent's assigned or clean tab)
+  "_intent": "Submit checkout form with test Visa card on staging portal and verify 200 OK order creation response",
+  "tab_id": 12345,
   "steps": [
     { "action": "navigate", "url": "https://example.com" },
     { "action": "wait_for", "selector": "#btn" },
@@ -89,43 +89,52 @@ Before navigating to an external URL, inspect the active tab's URL:
   ]
 }
 ```
-*(Note: `"steps"` is the primary parameter; `"actions"` is also supported as an alias).*
 
 ### Supported Pipeline Actions:
+
 - `navigate`: `{ "action": "navigate", "url": "https://..." }`
-- `new_tab`: `{ "action": "new_tab", "url": "https://..." }` (opens new tab & automatically attaches)
+- `new_tab`: `{ "action": "new_tab", "url": "https://..." }`
 - `switch_tab`: `{ "action": "switch_tab", "tab_id": 12345 }`
-- `wait_for`: `{ "action": "wait_for", "selector": "#btn", "timeout_ms": 8000 }` (polls until element exists and is visible)
+- `wait_for`: `{ "action": "wait_for", "selector": "#btn", "timeout_ms": 8000 }`
 - `wait_condition`: `{ "action": "wait_condition", "expression": "document.readyState === 'complete'", "timeout_ms": 8000 }`
 - `wait_network_idle`: `{ "action": "wait_network_idle", "timeout_ms": 5000 }`
-- `click`: Semantic click with auto-scroll and retry:
+- `click`: Semantic or quadrant click with auto-scroll, retry, and HUD hit-test passthrough:
   - By text: `{ "action": "click", "text": "Send" }`
   - By aria-label: `{ "action": "click", "aria_label": "Share" }`
   - By CSS selector: `{ "action": "click", "selector": "button[type='submit']" }`
-  - Composite: `{ "action": "click", "selector": "div[role='button']", "text": "Submit" }`
-- `scroll`: Auto-detects scrollable container or scrolls window:
-  - `{ "action": "scroll", "direction": "down", "delta_y": 700 }`
-  - `{ "action": "scroll", "selector": ".feed-container", "delta_y": 500 }`
-- `evaluate`: In-pipeline JavaScript snippet execution:
-  - `{ "action": "evaluate", "expression": "window.location.href" }`
-- `fill_inputs`: `{ "action": "fill_inputs", "fields": [{ "selector": "input[name='q']", "value": "search query" }] }` (framework-safe for React, Vue, Angular)
-- `press_key`: `{ "action": "press_key", "key": "Enter" }` (supports Enter, Tab, Escape, ArrowDown, etc.)
+  - By 16-column grid quadrant: `{ "action": "click", "quadrant": "P9" }`
+- `scroll`: `{ "action": "scroll", "direction": "down", "delta_y": 700 }`
+- `evaluate`: `{ "action": "evaluate", "expression": "window.location.href" }`
+- `fill_inputs`: `{ "action": "fill_inputs", "fields": [{ "selector": "input[name='q']", "value": "search query" }] }`
+- `press_key`: `{ "action": "press_key", "key": "Enter" }`
 - `sleep`: `{ "action": "sleep", "duration_ms": 500 }`
-- `take_screenshot`: `{ "action": "take_screenshot", "full_page": false, "format": "png" }` (clean compositor capture; optional `save_path`)
+- `take_screenshot`: `{ "action": "take_screenshot", "full_page": false, "format": "webp" }`
+- `print_to_pdf`: `{ "action": "print_to_pdf", "format": "a4", "save_path": "report.pdf" }`
+- `handle_dialog`: `{ "action": "handle_dialog", "accept": true, "prompt_text": "optional" }`
+- `replay_curl`: `{ "action": "replay_curl", "request_id": "req_1", "headers": { "X-Debug": "1" } }`
 
----
+## 5. Automated Testing, Visual PDF Pipeline (`run_browser_test`) & cURL Replay (`replay_curl`)
 
-## 5. Automated Testing Engine (`run_browser_test`)
+1. **Visual Test & Feature Overview Document Pipeline (`run_browser_test`)**:
 
-For defect or feature testing, use `run_browser_test`. Provide a plain text description of what to test or explicit steps. The engine decomposes descriptions into small steps, executes each, captures screenshots into a dedicated directory (`test_reports/<test_name>_<timestamp>/`), and outputs both `test_summary.md` and `test_report.json`.
+   - Decomposes test descriptions or step arrays into deterministic browser steps.
+   - Saves each step's cloaked compositor screenshot (`webp`, `quality: 75`) directly to `test_reports/<run_id>/assets/step_<n>.webp`.
+   - Compiles step intents (`_intent`), executed commands, and correlated optimistic cURL snippets into `test_reports/<run_id>/overview.html` and silently generates `test_reports/<run_id>/overview.pdf`.
+   - Serves openable and auto-print links on port `9222`:
+     - HTML Report: `http://127.0.0.1:9222/reports/<run_id>/overview.html`
+     - PDF Document: `http://127.0.0.1:9222/reports/<run_id>/overview.pdf`
+     - Instant Print Dialog Link: `http://127.0.0.1:9222/reports/<run_id>/overview.html?print=1`
 
----
+2. **Optimistic Network Capture & Zero-Subprocess Rust Replay (`replay_curl`)**:
 
-## 6. Token Economy & Exploration Rules
+   - OnlyDOMs captures XHR, Fetch, and Document calls occurring within 3000ms of an agent step in a 50-item per-tab ring buffer (`< 2MB` ceiling).
+   - Call `replay_curl` with `action: "list"` to inspect captured network requests, or pass `request_id` / a modified `curl` string (with optional `headers`, `body`, `method` overrides) to replay requests natively in Rust or via in-tab `fetch` without spawning a shell.
 
-1. **Zero Schema & Source Exploration**: Do NOT inspect `.json` schema files or local codebase files (`.rs`, `.js`). All schemas and actions are fully specified above.
-2. **Compound Batching Ceiling**: Standard tasks (e.g. open site, scroll, click, fill, send) MUST be dispatched in a single `execute_browser_pipeline` call rather than separate turn-by-turn micro-steps.
-3. **Anti-Bloat DOM Queries**: Never execute `document.querySelectorAll('*')` or dump full container `innerText`/`innerHTML` in `evaluate_expression`. Queries must be targeted (e.g. specific IDs, attributes, or scoped selectors).
-4. **Compact Tab Format**: `list_browser_sessions` returns lightweight objects `{ id, title, url, active, is_locked, locked_by_current_agent, locked_by_other_agent }` with `http://`, `https://`, and query parameters automatically stripped in the Rust layer. Only request `"detailed": true` if low-level Chromium debug flags are strictly required.
-5. **Screenshot Discipline**: Use `take_screenshot` with `save_path` (or `run_browser_test`) when visual verification is needed. This avoids polluting context tokens with giant base64 image strings.
-6. **DOM Chain Traversal & Evaluation**: When building element ancestry or parent chains in `evaluate_expression`, always include a `textContent` property (e.g. `textContent: (el.innerText || el.textContent || '').trim()`). OnlyDOMs's Rust layer automatically prunes all `null` attributes, strips inline CSS styling (`style="..."`), and truncates `textContent` inside `chain` arrays to 100 characters to prevent prompt bloat while preserving full `textContent` for top-level queries.
+## 6. Token Economy, Blindspot Sanitization & Exploration Rules
+
+1. **Zero Schema & Source Exploration**: Do NOT inspect `.json` schema files or local codebase files (`.rs`, `.js`) when running browser tasks.
+2. **Compound Batching Ceiling**: Dispatch multi-step workflows in a single `execute_browser_pipeline` call with `"_intent"`.
+3. **Anti-Bloat DOM Queries**: Never execute `document.querySelectorAll('*')` or dump full container `innerText`/`innerHTML` in `evaluate_expression`.
+4. **Compact Tab Format**: `list_browser_sessions` strips `http://`, `https://`, and query parameters in Rust.
+5. **Screenshot & Report Discipline**: Use `take_screenshot` with `save_path`, `print_to_pdf`, or `run_browser_test` to avoid polluting context tokens with base64 blobs.
+6. **Multi-Layer HUD Blindspot Guarantee**: The Rust `hud_sanitizer` automatically strips `<mcp-agent-hud>`, `#__mcp_agent_hud_host__`, and `data-mcp-internal-ignore="true"` from all responses, cloaks the HUD during screenshots/PDFs, and passes `P9` clicks through to the underlying page.

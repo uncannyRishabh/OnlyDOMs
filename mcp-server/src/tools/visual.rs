@@ -107,7 +107,7 @@ pub async fn take_screenshot(state: SharedHub, tab_id: Option<u64>, params: Valu
     };
     let quality = params.get("quality").and_then(|v| v.as_u64()).map(|q| q.min(100) as u32);
     let save_path = params.get("save_path").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let explicit_cloak = params.get("cloak_hud").and_then(|v| v.as_bool()).unwrap_or(false);
+    let explicit_cloak = params.get("cloak_hud").and_then(|v| v.as_bool()).unwrap_or(true);
 
     // By default, omit base64 string when save_path is provided to protect agent context window
     let include_base64 = params.get("include_base64")
@@ -125,7 +125,12 @@ pub async fn take_screenshot(state: SharedHub, tab_id: Option<u64>, params: Valu
     let eval_res = send_cdp_command(state.clone(), tab_id, "Runtime.evaluate", serde_json::json!({
         "expression": "(() => {
             const hud = document.getElementById('__mcp_agent_hud_host__') || document.querySelector('mcp-agent-hud');
-            if (hud) hud.style.visibility = 'hidden';
+            if (hud) {
+                hud.setAttribute('data-mcp-cloaked', 'true');
+                hud.style.setProperty('display', 'none', 'important');
+                hud.style.setProperty('visibility', 'hidden', 'important');
+                hud.style.setProperty('opacity', '0', 'important');
+            }
             const doc = document.documentElement;
             const body = document.body;
             const scrollW = Math.max(
@@ -219,6 +224,18 @@ pub async fn take_screenshot(state: SharedHub, tab_id: Option<u64>, params: Valu
 
     if explicit_cloak {
         set_hud_cloak_state(state.clone(), tab_id, false).await;
+        let _ = send_cdp_command(state.clone(), tab_id, "Runtime.evaluate", serde_json::json!({
+            "expression": "(() => {
+                const hud = document.getElementById('__mcp_agent_hud_host__') || document.querySelector('mcp-agent-hud');
+                if (hud) {
+                    hud.removeAttribute('data-mcp-cloaked');
+                    hud.style.setProperty('display', 'block', 'important');
+                    hud.style.setProperty('visibility', 'visible', 'important');
+                    hud.style.removeProperty('opacity');
+                }
+            })()",
+            "returnByValue": true
+        })).await;
     }
 
     let screenshot_res = screenshot_res?;

@@ -1,10 +1,11 @@
 /**
- * OnlyDOMs Popup Control Center & Site Blacklist Manager
+ * OnlyDOMs Popup Control Center & Site Policy Manager
  *
  * Implements:
- * - Real-time WebSocket connection badge & port indicator (F7)
+ * - Real-time WebSocket connection status badge & port indicator (F7)
  * - Active agent session leases monitor & Emergency Detach All (F7)
- * - Persistent site blacklist manager with chrome.storage.local (F8)
+ * - Persistent site policy blacklist with chrome.storage.local (F8)
+ * - Modern Web Guidance compliant interactions & interactive templates
  */
 
 const STORAGE_KEY_BLACKLIST = "blockedDomains";
@@ -33,9 +34,9 @@ let currentBlockedDomains = [];
 let activeSessionsCache = [];
 
 // ---------------------------------------------------------------------------
-// Toast Notification
+// Feedback Toast
 // ---------------------------------------------------------------------------
-function showToast(message, durationMs = 2500) {
+function showToast(message, durationMs = 2400) {
   if (toastTimer) clearTimeout(toastTimer);
   statusToast.textContent = message;
   statusToast.style.display = "block";
@@ -45,7 +46,7 @@ function showToast(message, durationMs = 2500) {
 }
 
 // ---------------------------------------------------------------------------
-// Error Display
+// Validation & Error Display
 // ---------------------------------------------------------------------------
 function showInputError(msg) {
   inputError.textContent = msg;
@@ -60,21 +61,12 @@ function clearInputError() {
 // ---------------------------------------------------------------------------
 // Site Blacklist Management (chrome.storage.local)
 // ---------------------------------------------------------------------------
-
-/**
- * Validates and normalizes pattern string.
- * Supports:
- * - Exact domains: "facebook.com", "sub.domain.org"
- * - Wildcard subdomains: "*.bank.com"
- * - URL prefixes: "https://internal.corp/admin", "github.com/settings"
- */
 function normalizePattern(raw) {
   const trimmed = raw.trim();
   if (!trimmed) {
     throw new Error("Pattern cannot be empty.");
   }
 
-  // Safe defaults guard
   const lower = trimmed.toLowerCase();
   if (
     lower === "about:blank" ||
@@ -86,7 +78,6 @@ function normalizePattern(raw) {
     throw new Error("Internal browser URLs (about:blank, chrome://) cannot be blocked.");
   }
 
-  // Wildcard validation
   if (trimmed.startsWith("*.")) {
     const root = trimmed.slice(2).trim();
     if (!root || root.includes("*") || root.includes("/")) {
@@ -95,14 +86,11 @@ function normalizePattern(raw) {
     return `*.${root.toLowerCase()}`;
   }
 
-  // If pattern looks like a standard URL or host
   if (trimmed.includes("://")) {
     try {
       const parsed = new URL(trimmed);
-      // Normalized url prefix
       return parsed.href.toLowerCase();
     } catch (_) {
-      // Fallback
       return trimmed.toLowerCase();
     }
   }
@@ -130,13 +118,15 @@ async function saveBlacklist(domains) {
 
 function renderBlacklist(domains) {
   blacklistContainer.innerHTML = "";
-  blockedCountBadge.textContent = String(domains.length);
+  blockedCountBadge.textContent = `${domains.length} blocked`;
 
   if (domains.length === 0) {
     clearAllBtn.style.display = "none";
     blacklistContainer.innerHTML = `
       <div class="empty-state">
-        No blocked sites. All accessible URLs are permitted for agent interactions.
+        <span class="empty-icon" aria-hidden="true">🛡️</span>
+        <p class="empty-title">All Sites Permitted</p>
+        <p class="empty-desc">No blocked domains. Agents can interact with all non-internal browser tabs.</p>
       </div>
     `;
     return;
@@ -148,10 +138,9 @@ function renderBlacklist(domains) {
     const item = document.createElement("div");
     item.className = "blacklist-item";
 
-    const info = document.createElement("div");
-    info.className = "blacklist-pattern-info";
+    const meta = document.createElement("div");
+    meta.className = "pattern-meta";
 
-    // Determine pattern type tag
     const tag = document.createElement("span");
     tag.className = "pattern-type-tag";
     if (pattern.startsWith("*.")) {
@@ -166,22 +155,22 @@ function renderBlacklist(domains) {
     }
 
     const text = document.createElement("span");
-    text.className = "blacklist-pattern-text";
+    text.className = "pattern-text-label";
     text.textContent = pattern;
     text.title = pattern;
 
-    info.appendChild(tag);
-    info.appendChild(text);
+    meta.appendChild(tag);
+    meta.appendChild(text);
 
     const deleteBtn = document.createElement("button");
-    deleteBtn.className = "delete-pattern-btn";
+    deleteBtn.className = "pattern-delete-btn";
     deleteBtn.type = "button";
     deleteBtn.innerHTML = "&times;";
     deleteBtn.title = `Remove ${pattern}`;
     deleteBtn.setAttribute("aria-label", `Remove ${pattern}`);
     deleteBtn.addEventListener("click", () => handleRemovePattern(pattern));
 
-    item.appendChild(info);
+    item.appendChild(meta);
     item.appendChild(deleteBtn);
     blacklistContainer.appendChild(item);
   });
@@ -201,7 +190,6 @@ async function handleAddPattern(e) {
     return;
   }
 
-  // Check duplicate
   const exists = currentBlockedDomains.some(
     (p) => p.toLowerCase() === normalized.toLowerCase()
   );
@@ -245,7 +233,7 @@ function updateConnectionUI(connected, port) {
     customPortInput.value = displayPort;
   }
 
-  connectionPill.className = "status-pill";
+  connectionPill.className = "connection-badge";
   if (connected) {
     connectionPill.classList.add("status-connected");
     connectionText.textContent = `Connected (${displayPort})`;
@@ -258,10 +246,8 @@ function updateConnectionUI(connected, port) {
 }
 
 async function refreshSessionsAndStatus() {
-  // Query status & sessions from background service worker
   chrome.runtime.sendMessage({ action: "get_sessions" }, async (res) => {
     if (chrome.runtime.lastError || !res) {
-      // Fallback to legacy "status" message
       chrome.runtime.sendMessage({ action: "status" }, async (statusRes) => {
         if (!statusRes) return;
         updateConnectionUI(statusRes.connected, statusRes.activePort);
@@ -316,7 +302,9 @@ function renderActiveSessions(sessions) {
   if (count === 0) {
     sessionsList.innerHTML = `
       <div class="empty-state">
-        No active agent sessions. Agents lease tabs dynamically on demand.
+        <span class="empty-icon" aria-hidden="true">🍃</span>
+        <p class="empty-title">No Active Leases</p>
+        <p class="empty-desc">Agents lease tabs dynamically on demand when executing browser tools.</p>
       </div>
     `;
     return;
@@ -326,42 +314,41 @@ function renderActiveSessions(sessions) {
     const item = document.createElement("div");
     item.className = "session-item";
 
-    const info = document.createElement("div");
-    info.className = "session-info";
+    const meta = document.createElement("div");
+    meta.className = "session-meta";
 
-    const headerRow = document.createElement("div");
-    headerRow.className = "session-header-row";
+    const headingLine = document.createElement("div");
+    headingLine.className = "session-heading-line";
 
-    const badge = document.createElement("span");
-    badge.className = "tab-badge";
-    badge.textContent = `#${s.id}`;
+    const idBadge = document.createElement("span");
+    idBadge.className = "session-id-pill";
+    idBadge.textContent = `#${s.id}`;
 
-    const title = document.createElement("span");
-    title.className = "session-title";
-    title.textContent = s.title || `Tab ${s.id}`;
-    title.title = s.title || `Tab ${s.id}`;
+    const titleSpan = document.createElement("span");
+    titleSpan.className = "session-title-text";
+    titleSpan.textContent = s.title || `Tab ${s.id}`;
+    titleSpan.title = s.title || `Tab ${s.id}`;
 
-    headerRow.appendChild(badge);
-    headerRow.appendChild(title);
-    info.appendChild(headerRow);
+    headingLine.appendChild(idBadge);
+    headingLine.appendChild(titleSpan);
+    meta.appendChild(headingLine);
 
     if (s.url) {
       const urlSpan = document.createElement("span");
-      urlSpan.className = "session-url";
+      urlSpan.className = "session-url-preview";
       urlSpan.textContent = s.url;
       urlSpan.title = s.url;
-      info.appendChild(urlSpan);
+      meta.appendChild(urlSpan);
     }
 
-    // Individual release button
     const releaseBtn = document.createElement("button");
-    releaseBtn.className = "session-action-btn";
+    releaseBtn.className = "session-detach-btn";
     releaseBtn.type = "button";
     releaseBtn.textContent = "Detach";
     releaseBtn.title = `Detach agent from tab #${s.id}`;
     releaseBtn.addEventListener("click", () => handleDetachSingle(s.id));
 
-    item.appendChild(info);
+    item.appendChild(meta);
     item.appendChild(releaseBtn);
     sessionsList.appendChild(item);
   });
@@ -381,31 +368,41 @@ function handleEmergencyDetachAll() {
   emergencyDetachBtn.textContent = "Detaching...";
 
   chrome.runtime.sendMessage({ action: "detach_all" }, (res) => {
+    emergencyDetachBtn.textContent = "🚨 Detach All";
     if (chrome.runtime.lastError || (res && !res.success)) {
-      // Fallback: try legacy disconnect
       chrome.runtime.sendMessage({ action: "disconnect" }, () => {
-        emergencyDetachBtn.textContent = "🚨 Detach All";
         showToast("Agent sessions detached");
         refreshSessionsAndStatus();
       });
       return;
     }
-    emergencyDetachBtn.textContent = "🚨 Detach All";
     showToast("All agent sessions detached");
     refreshSessionsAndStatus();
   });
 }
 
 // ---------------------------------------------------------------------------
-// Port Override Settings Drawer
+// Settings Drawer Toggle
 // ---------------------------------------------------------------------------
 
 function toggleSettings() {
   const isHidden = settingsDrawer.style.display === "none";
-  settingsDrawer.style.display = isHidden ? "flex" : "none";
-  toggleSettingsBtn.setAttribute("aria-expanded", String(isHidden));
+  const chevron = toggleSettingsBtn.querySelector(".chevron-arrow");
   if (isHidden) {
+    settingsDrawer.style.display = "block";
+    requestAnimationFrame(() => {
+      settingsDrawer.classList.add("open");
+    });
+    toggleSettingsBtn.setAttribute("aria-expanded", "true");
+    if (chevron) chevron.classList.add("open");
     customPortInput.focus();
+  } else {
+    settingsDrawer.classList.remove("open");
+    toggleSettingsBtn.setAttribute("aria-expanded", "false");
+    if (chevron) chevron.classList.remove("open");
+    setTimeout(() => {
+      settingsDrawer.style.display = "none";
+    }, 200);
   }
 }
 
@@ -416,16 +413,31 @@ function handleSavePort() {
     return;
   }
 
-  chrome.runtime.sendMessage({ action: "set_port", port }, (res) => {
+  chrome.runtime.sendMessage({ action: "set_port", port }, () => {
     showToast(`Connecting to port ${port}...`);
-    settingsDrawer.style.display = "none";
-    toggleSettingsBtn.setAttribute("aria-expanded", "false");
+    toggleSettings();
     setTimeout(refreshSessionsAndStatus, 600);
   });
 }
 
 // ---------------------------------------------------------------------------
-// Event Listeners & Initialization
+// Interactive Syntax Templates
+// ---------------------------------------------------------------------------
+function initializeSyntaxChips() {
+  document.querySelectorAll(".syntax-chip").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const template = btn.getAttribute("data-template");
+      if (template) {
+        patternInput.value = template;
+        patternInput.focus();
+        clearInputError();
+      }
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Initialization
 // ---------------------------------------------------------------------------
 
 function initializeEventListeners() {
@@ -435,8 +447,8 @@ function initializeEventListeners() {
   emergencyDetachBtn.addEventListener("click", handleEmergencyDetachAll);
   toggleSettingsBtn.addEventListener("click", toggleSettings);
   savePortBtn.addEventListener("click", handleSavePort);
+  initializeSyntaxChips();
 
-  // Sync with chrome.storage.local changes
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area === "local" && changes[STORAGE_KEY_BLACKLIST]) {
       const newList = changes[STORAGE_KEY_BLACKLIST].newValue || [];
@@ -449,11 +461,9 @@ function initializeEventListeners() {
   });
 }
 
-// Startup
 document.addEventListener("DOMContentLoaded", async () => {
   initializeEventListeners();
   await loadBlacklist();
   await refreshSessionsAndStatus();
-  // Poll every 2 seconds while popup remains open
   setInterval(refreshSessionsAndStatus, 2000);
 });

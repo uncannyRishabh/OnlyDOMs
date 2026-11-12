@@ -20,6 +20,10 @@ pub struct CapturedRequest {
     pub tab_id: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rpc_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intent: Option<String>,
     pub url: String,
     pub method: String,
     pub resource_type: String,
@@ -48,6 +52,12 @@ impl CapturedRequest {
             + 64;
         if let Some(ref r) = self.rpc_id {
             size += r.len();
+        }
+        if let Some(ref tn) = self.tool_name {
+            size += tn.len();
+        }
+        if let Some(ref it) = self.intent {
+            size += it.len();
         }
         for (k, v) in &self.headers {
             size += k.len() + v.len();
@@ -130,12 +140,20 @@ pub fn is_allowed_resource_type(resource_type: &str) -> bool {
     )
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentStepMeta {
+    pub rpc_id: String,
+    pub tool_name: Option<String>,
+    pub intent: Option<String>,
+    pub timestamp_ms: u64,
+}
+
 #[derive(Default, Debug)]
 pub struct NetworkHarvester {
     /// Per-tab ring buffer of captured requests (max 50 items, < 2MB ceiling).
     pub tab_buffers: HashMap<u64, VecDeque<CapturedRequest>>,
-    /// Tracks the latest `(rpc_id, timestamp_ms)` per tab for 3000ms optimistic correlation.
-    pub latest_agent_step: HashMap<u64, (String, u64)>,
+    /// Tracks the latest `AgentStepMeta` per tab for 3000ms optimistic correlation.
+    pub latest_agent_step: HashMap<u64, AgentStepMeta>,
 }
 
 impl NetworkHarvester {
@@ -145,21 +163,45 @@ impl NetworkHarvester {
 
     /// Records that an agent tool/step with `rpc_id` executed on `tab_id` at `timestamp_ms`.
     pub fn record_agent_step(&mut self, tab_id: u64, rpc_id: &str, timestamp_ms: u64) {
+        self.record_agent_step_with_meta(tab_id, rpc_id, None, None, timestamp_ms);
+    }
+
+    /// Records an agent tool/step with explicit tool name and intent metadata.
+    pub fn record_agent_step_with_meta(
+        &mut self,
+        tab_id: u64,
+        rpc_id: &str,
+        tool_name: Option<&str>,
+        intent: Option<&str>,
+        timestamp_ms: u64,
+    ) {
         if tab_id > 0 && !rpc_id.trim().is_empty() {
-            self.latest_agent_step
-                .insert(tab_id, (rpc_id.trim().to_string(), timestamp_ms));
+            self.latest_agent_step.insert(
+                tab_id,
+                AgentStepMeta {
+                    rpc_id: rpc_id.trim().to_string(),
+                    tool_name: tool_name.map(|s| s.to_string()),
+                    intent: intent.map(|s| s.to_string()),
+                    timestamp_ms,
+                },
+            );
         }
+    }
+
+    /// Resolves the correlated `AgentStepMeta` if the request occurred within 3000ms of an agent step.
+    pub fn resolve_correlated_step(&self, tab_id: u64, req_timestamp_ms: u64) -> Option<AgentStepMeta> {
+        if let Some(step) = self.latest_agent_step.get(&tab_id) {
+            let delta = req_timestamp_ms.saturating_sub(step.timestamp_ms);
+            if delta <= CORRELATION_WINDOW_MS {
+                return Some(step.clone());
+            }
+        }
+        None
     }
 
     /// Resolves the correlated `rpc_id` if the request occurred within 3000ms of an agent step.
     pub fn resolve_correlated_rpc_id(&self, tab_id: u64, req_timestamp_ms: u64) -> Option<String> {
-        if let Some((rpc_id, step_ts)) = self.latest_agent_step.get(&tab_id) {
-            let delta = req_timestamp_ms.saturating_sub(*step_ts);
-            if delta <= CORRELATION_WINDOW_MS {
-                return Some(rpc_id.clone());
-            }
-        }
-        None
+        self.resolve_correlated_step(tab_id, req_timestamp_ms).map(|s| s.rpc_id)
     }
 
     /// Inserts or updates a captured request in the tab's ring buffer, enforcing both the
@@ -174,7 +216,15 @@ impl NetworkHarvester {
 
         // Correlate with latest agent step within 3000ms if not already tagged
         if req.rpc_id.is_none() {
-            req.rpc_id = self.resolve_correlated_rpc_id(req.tab_id, req.timestamp_ms);
+            if let Some(step) = self.resolve_correlated_step(req.tab_id, req.timestamp_ms) {
+                req.rpc_id = Some(step.rpc_id);
+                if req.tool_name.is_none() {
+                    req.tool_name = step.tool_name;
+                }
+                if req.intent.is_none() {
+                    req.intent = step.intent;
+                }
+            }
         }
 
         if req.curl_command.is_empty() {
@@ -204,6 +254,15 @@ impl NetworkHarvester {
             }
             if req.elapsed_ms.is_some() {
                 existing.elapsed_ms = req.elapsed_ms;
+            }
+            if req.rpc_id.is_some() && existing.rpc_id.is_none() {
+                existing.rpc_id = req.rpc_id.clone();
+            }
+            if req.tool_name.is_some() && existing.tool_name.is_none() {
+                existing.tool_name = req.tool_name.clone();
+            }
+            if req.intent.is_some() && existing.intent.is_none() {
+                existing.intent = req.intent.clone();
             }
             return existing.clone();
         }
@@ -285,6 +344,12 @@ impl NetworkHarvester {
                 .and_then(|v| v.as_u64())
                 .map(|s| s as u16);
             let response_headers = extract_headers_map(resp_obj.get("headers"));
+            let response_body = payload
+                .get("responseBody")
+                .or_else(|| payload.get("response_body"))
+                .or_else(|| resp_obj.get("body"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
             let elapsed_ms = payload.get("elapsed_ms").and_then(|v| v.as_u64());
 
             if let Some(buf) = self.tab_buffers.get_mut(&tab_id) {
@@ -292,6 +357,9 @@ impl NetworkHarvester {
                     existing.status = status;
                     if !response_headers.is_empty() {
                         existing.response_headers = Some(response_headers);
+                    }
+                    if response_body.is_some() {
+                        existing.response_body = response_body;
                     }
                     if elapsed_ms.is_some() {
                         existing.elapsed_ms = elapsed_ms;
@@ -342,12 +410,36 @@ impl NetworkHarvester {
             .get("elapsedMs")
             .or_else(|| payload.get("elapsed_ms"))
             .and_then(|v| v.as_u64());
-        let explicit_rpc_id = payload
+
+        let mut explicit_rpc_id = payload
             .get("rpc_id")
             .or_else(|| payload.get("rpcId"))
             .or_else(|| val.get("rpc_id"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+        let mut explicit_tool_name = payload
+            .get("tool_name")
+            .or_else(|| payload.get("toolName"))
+            .or_else(|| payload.get("action"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let mut explicit_intent = payload
+            .get("intent")
+            .or_else(|| payload.get("_intent"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        if explicit_rpc_id.is_none() {
+            if let Some(step) = self.resolve_correlated_step(tab_id, now_ms) {
+                explicit_rpc_id = Some(step.rpc_id);
+                if explicit_tool_name.is_none() {
+                    explicit_tool_name = step.tool_name;
+                }
+                if explicit_intent.is_none() {
+                    explicit_intent = step.intent;
+                }
+            }
+        }
 
         let curl_command = serialize_to_curl(&method, &url, &headers, post_data.as_deref());
 
@@ -355,6 +447,8 @@ impl NetworkHarvester {
             request_id,
             tab_id,
             rpc_id: explicit_rpc_id,
+            tool_name: explicit_tool_name,
+            intent: explicit_intent,
             url,
             method,
             resource_type: resource_type.to_string(),
@@ -483,5 +577,82 @@ mod tests {
         assert!(curl.starts_with("curl -X POST 'https://api.example.com/login'"));
         assert!(curl.contains("'Authorization: Bearer tok'\\''en'"));
         assert!(curl.contains("--data-raw '{\"name\":\"O'\\''Reilly\"}'"));
+    }
+
+    #[test]
+    fn test_action_metadata_correlation_and_response_body_capture() {
+        let mut harvester = NetworkHarvester::new();
+        // Record agent step with tool_name and intent
+        harvester.record_agent_step_with_meta(
+            7,
+            "step_checkout_btn",
+            Some("click"),
+            Some("Click submit checkout button"),
+            50_000,
+        );
+
+        // Intercept outgoing request within 3000ms window
+        let req_ev = json!({
+            "type": "EVENT",
+            "event": "NETWORK_CAPTURE",
+            "tabId": 7,
+            "payload": {
+                "requestId": "req_order_999",
+                "resourceType": "XHR",
+                "url": "https://shop.example.com/api/checkout",
+                "method": "POST",
+                "headers": {
+                    "Content-Type": "application/json",
+                    "X-CSRF-Token": "secret_abc"
+                },
+                "postData": "{\"cart_id\":123}",
+                "timestamp_ms": 50_500
+            }
+        });
+        let req_res = harvester.ingest_extension_event(&req_ev);
+        assert!(req_res.is_some());
+        let cap = req_res.unwrap();
+        assert_eq!(cap.rpc_id.as_deref(), Some("step_checkout_btn"));
+        assert_eq!(cap.tool_name.as_deref(), Some("click"));
+        assert_eq!(cap.intent.as_deref(), Some("Click submit checkout button"));
+        assert!(cap.status.is_none());
+        assert!(cap.response_body.is_none());
+
+        // Ingest responseReceived event with status, headers, and body
+        let resp_ev = json!({
+            "type": "EVENT",
+            "event": "Network.responseReceived",
+            "tabId": 7,
+            "payload": {
+                "requestId": "req_order_999",
+                "resourceType": "XHR",
+                "response": {
+                    "status": 200,
+                    "headers": {
+                        "content-type": "application/json"
+                    }
+                },
+                "responseBody": "{\"order_id\":\"ORD-789\",\"status\":\"paid\"}"
+            }
+        });
+        let updated = harvester.ingest_extension_event(&resp_ev);
+        assert!(updated.is_some());
+        let updated_cap = updated.unwrap();
+        assert_eq!(updated_cap.status, Some(200));
+        assert_eq!(
+            updated_cap.response_body.as_deref(),
+            Some("{\"order_id\":\"ORD-789\",\"status\":\"paid\"}")
+        );
+        assert_eq!(updated_cap.rpc_id.as_deref(), Some("step_checkout_btn"));
+        assert_eq!(updated_cap.tool_name.as_deref(), Some("click"));
+        assert_eq!(
+            updated_cap.intent.as_deref(),
+            Some("Click submit checkout button")
+        );
+
+        // Verify lookup by rpc_id
+        let by_rpc = harvester.list_requests_by_rpc_id(7, "step_checkout_btn");
+        assert_eq!(by_rpc.len(), 1);
+        assert_eq!(by_rpc[0].request_id, "req_order_999");
     }
 }

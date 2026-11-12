@@ -114,6 +114,10 @@ pub async fn interact(state: SharedHub, tab_id: Option<u64>, params: Value) -> R
                 .unwrap_or(Value::Null);
         }
 
+        // Prior to press, move cursor to coordinate to trigger hover/pointerenter states
+        send_cdp_command(state.clone(), tab_id, "Input.dispatchMouseEvent", serde_json::json!({
+            "type": "mouseMoved", "x": x, "y": y
+        })).await?;
         send_cdp_command(state.clone(), tab_id, "Input.dispatchMouseEvent", serde_json::json!({
             "type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1
         })).await?;

@@ -96,7 +96,7 @@ impl TabRegistry {
         if let Some(existing) = self.tab_locks.get_mut(&tab_id) {
             if existing.client_id != client_id {
                 return Err(format!(
-                    "Tab {} is locked by another agent session (client: {}). Operation blocked to prevent interception.",
+                    "Tab {} is locked by another agent session (client: {}). Protocol Conflict: Do not mix CLI commands and MCP calls on the same tab! If you are an AI agent using OnlyDOMs MCP, use call_mcp_tool instead of running the onlydoms CLI.",
                     tab_id, existing.client_id
                 ));
             }

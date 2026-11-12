@@ -489,17 +489,48 @@ pub async fn replay_curl(
         .or(tab_id)
         .unwrap_or(1);
 
-    // Support listing captured cURLs from the tab's ring buffer when action == "list"
-    if params.get("action").and_then(|v| v.as_str()) == Some("list")
+    // Support listing captured cURLs from the tab's ring buffer when action == "list", "query", or "get_traffic"
+    let action_str = params.get("action").and_then(|v| v.as_str());
+    if action_str == Some("list")
+        || action_str == Some("query")
+        || action_str == Some("get_traffic")
+        || action_str == Some("get_network_traffic")
         || params.get("list_captured").and_then(|v| v.as_bool()) == Some(true)
     {
+        let rpc_filter = params
+            .get("action_id")
+            .or_else(|| params.get("actionId"))
+            .or_else(|| params.get("rpc_id"))
+            .or_else(|| params.get("rpcId"))
+            .and_then(|v| v.as_str());
+        let req_filter = params
+            .get("request_id")
+            .or_else(|| params.get("requestId"))
+            .and_then(|v| v.as_str());
+        let url_filter = params
+            .get("url_filter")
+            .or_else(|| params.get("url"))
+            .and_then(|v| v.as_str());
+
         let lock = state.lock().await;
-        let captured = lock.network_harvester.list_tab_requests(target_tab);
+        let mut captured = lock.network_harvester.list_tab_requests(target_tab);
+        if let Some(rf) = rpc_filter {
+            captured.retain(|r| r.rpc_id.as_deref() == Some(rf));
+        }
+        if let Some(qid) = req_filter {
+            captured.retain(|r| r.request_id == qid);
+        }
+        if let Some(uf) = url_filter {
+            let uf_lower = uf.to_lowercase();
+            captured.retain(|r| r.url.to_lowercase().contains(&uf_lower));
+        }
+
         return Ok(serde_json::json!({
             "success": true,
             "tab_id": target_tab,
             "count": captured.len(),
-            "network_calls": captured
+            "network_calls": captured,
+            "network_traffic": captured
         }));
     }
 
@@ -662,5 +693,88 @@ mod tests {
     fn test_parse_curl_rejects_non_curl_and_output_flags() {
         assert!(parse_curl_command("rm -rf /").is_err());
         assert!(parse_curl_command("curl https://example.com -o /etc/passwd").is_err());
+    }
+
+    #[tokio::test]
+    async fn test_query_captured_network_traffic_with_action_correlation() {
+        use crate::websocket_hub::HubState;
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+        use serde_json::json;
+
+        let hub = Arc::new(Mutex::new(HubState::new()));
+        {
+            let mut lock = hub.lock().await;
+            lock.network_harvester.push_or_update(crate::tools::network_harvester::CapturedRequest {
+                request_id: "req_101".to_string(),
+                tab_id: 2,
+                rpc_id: Some("action_btn_click".to_string()),
+                tool_name: Some("click".to_string()),
+                intent: Some("Click login button".to_string()),
+                url: "https://auth.example.com/api/v1/tokens".to_string(),
+                method: "POST".to_string(),
+                resource_type: "XHR".to_string(),
+                headers: HashMap::new(),
+                post_data: Some("{\"user\":\"test\"}".to_string()),
+                status: Some(200),
+                response_headers: Some(HashMap::new()),
+                response_body: Some("{\"token\":\"xyz\"}".to_string()),
+                elapsed_ms: Some(45),
+                timestamp_ms: 10_000,
+                curl_command: "curl -X POST https://auth.example.com/api/v1/tokens".to_string(),
+            });
+            lock.network_harvester.push_or_update(crate::tools::network_harvester::CapturedRequest {
+                request_id: "req_102".to_string(),
+                tab_id: 2,
+                rpc_id: Some("action_fetch_feed".to_string()),
+                tool_name: Some("navigate".to_string()),
+                intent: Some("Navigate to user dashboard".to_string()),
+                url: "https://auth.example.com/api/v1/feed".to_string(),
+                method: "GET".to_string(),
+                resource_type: "Fetch".to_string(),
+                headers: HashMap::new(),
+                post_data: None,
+                status: Some(200),
+                response_headers: Some(HashMap::new()),
+                response_body: Some("{\"items\":[]}".to_string()),
+                elapsed_ms: Some(30),
+                timestamp_ms: 10_500,
+                curl_command: "curl -X GET https://auth.example.com/api/v1/feed".to_string(),
+            });
+        }
+
+        // Query by action_id
+        let res = replay_curl(
+            hub.clone(),
+            Some(2),
+            json!({
+                "action": "get_network_traffic",
+                "action_id": "action_btn_click"
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(res["success"], true);
+        assert_eq!(res["count"], 1);
+        let calls = res["network_traffic"].as_array().unwrap();
+        assert_eq!(calls[0]["request_id"], "req_101");
+        assert_eq!(calls[0]["rpc_id"], "action_btn_click");
+        assert_eq!(calls[0]["tool_name"], "click");
+        assert_eq!(calls[0]["response_body"], "{\"token\":\"xyz\"}");
+
+        // Query by url_filter
+        let feed_res = replay_curl(
+            hub.clone(),
+            Some(2),
+            json!({
+                "action": "list",
+                "url_filter": "feed"
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(feed_res["count"], 1);
+        assert_eq!(feed_res["network_traffic"][0]["request_id"], "req_102");
     }
 }

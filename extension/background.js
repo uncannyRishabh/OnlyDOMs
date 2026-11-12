@@ -16,8 +16,10 @@ const latestStepByTab = new Map(); // Map<tabId, { rpcId, timestamp }>
 
 const MAX_LOGS_PER_TAB = 25;
 const MAX_NETWORK_CALLS_PER_TAB = 50;
-const IDLE_COMPLETE_HOLD_MS = 2500;
+const IDLE_COMPLETE_HOLD_MS = 30000;
 const NETWORK_CORRELATION_WINDOW_MS = 3000;
+
+const pinnedTabs = new Set();
 
 let activeInteractingTabId = null;
 let activeInteractingTabTitle = "";
@@ -227,11 +229,15 @@ async function broadcastHudStateToAllTabs() {
 }
 
 function scheduleTaskCompletionCleanup(tabId, holdMs = IDLE_COMPLETE_HOLD_MS) {
+    if (pinnedTabs.has(Number(tabId))) {
+        return;
+    }
     if (completionTimers.has(tabId)) {
         clearTimeout(completionTimers.get(tabId));
     }
     const timer = setTimeout(() => {
         completionTimers.delete(tabId);
+        if (pinnedTabs.has(Number(tabId))) return;
         const state = taskStore.get(tabId);
         if (state && (state.status === "completed" || state.status === "error")) {
             taskStore.delete(tabId);
@@ -250,7 +256,9 @@ async function upsertAgentTaskState({
     status = "running",
     rpcId = null,
     toolName = null,
-    latencyMs = null
+    latencyMs = null,
+    requestData = null,
+    responseData = null
 }) {
     const numericTabId = Number(tabId);
     if (!numericTabId || isNaN(numericTabId)) return;
@@ -309,19 +317,34 @@ async function upsertAgentTaskState({
     existing.updatedAt = now;
 
     if (rpcId || toolName) {
-        existing.logs.push({
+        const existingLog = existing.logs.find(l => l.rpcId === rpcId);
+        if (existingLog) {
+            existingLog.status = status;
+            if (latencyMs != null) existingLog.latencyMs = latencyMs;
+            if (requestData != null) existingLog.requestData = requestData;
+            if (responseData != null) existingLog.responseData = responseData;
+        } else {
+            existing.logs.push({
+                rpcId: rpcId || `rpc_${now}`,
+                toolName: toolName || "cdp_cmd",
+                intent: existing.intent,
+                executingCmd: existing.executingCmd,
+                status,
+                latencyMs,
+                timestamp: now,
+                requestData: requestData || null,
+                responseData: responseData || null
+            });
+            if (existing.logs.length > MAX_LOGS_PER_TAB) {
+                existing.logs.shift();
+            }
+        }
+        latestStepByTab.set(numericTabId, {
             rpcId: rpcId || `rpc_${now}`,
             toolName: toolName || "cdp_cmd",
-            intent: existing.intent,
-            executingCmd: existing.executingCmd,
-            status,
-            latencyMs,
+            intent: existing.intent || null,
             timestamp: now
         });
-        if (existing.logs.length > MAX_LOGS_PER_TAB) {
-            existing.logs.shift();
-        }
-        latestStepByTab.set(numericTabId, { rpcId: rpcId || `rpc_${now}`, timestamp: now });
     }
 
     taskStore.set(numericTabId, existing);
@@ -388,6 +411,9 @@ async function setHudCloakOnTab(tabId, cloak) {
             type: cloak ? "CLOAK_HUD" : "UNCLOAK_HUD",
             cloak: !!cloak
         });
+        if (cloak) {
+            await new Promise((r) => setTimeout(r, 60));
+        }
     } catch (_) {}
 }
 
@@ -523,7 +549,11 @@ function connect(overridePort) {
                         intent: data.intent,
                         executingCmd: data.executing_cmd || data.executingCmd,
                         status: data.status || "running",
-                        rpcId: data.rpc_id || `hud_${Date.now()}`
+                        rpcId: data.rpc_id || `hud_${Date.now()}`,
+                        toolName: data.tool_name || data.toolName || "mcp_tool",
+                        latencyMs: data.latency_ms || data.latencyMs || null,
+                        requestData: data.request_data || null,
+                        responseData: data.response_data || null
                     });
                 }
                 return;
@@ -580,7 +610,8 @@ function connect(overridePort) {
                             executingCmd: `Executing :: ${cmdSummary} on Tab :: #${targetTabId} (${tabTitle})`,
                             status: "running",
                             rpcId: data.id,
-                            toolName: data.method
+                            toolName: data.method,
+                            requestData: data.params || null
                         });
                     }
 
@@ -592,6 +623,14 @@ function connect(overridePort) {
 
                     if (isVisualCapture) {
                         await setHudCloakOnTab(targetTabId, false);
+                    } else {
+                        await upsertAgentTaskState({
+                            tabId: targetTabId,
+                            rpcId: data.id,
+                            toolName: data.method,
+                            status: "completed",
+                            responseData: res || null
+                        });
                     }
 
                     // Schedule automatic transition to completed -> auto-hide if no subsequent command arrives within 600ms
@@ -928,10 +967,10 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
         }
         const now = Date.now();
         const latestStep = latestStepByTab.get(tabId);
-        const correlatedRpcId =
-            latestStep && now - latestStep.timestamp <= NETWORK_CORRELATION_WINDOW_MS
-                ? latestStep.rpcId
-                : null;
+        const isCorrelated = latestStep && now - latestStep.timestamp <= NETWORK_CORRELATION_WINDOW_MS;
+        const correlatedRpcId = isCorrelated ? latestStep.rpcId : null;
+        const correlatedToolName = isCorrelated ? (latestStep.toolName || null) : null;
+        const correlatedIntent = isCorrelated ? (latestStep.intent || null) : null;
 
         const reqObj = params?.request || {};
         const requestId = params?.requestId || `req_${now}`;
@@ -945,16 +984,24 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
             requestId,
             tabId,
             rpcId: correlatedRpcId,
+            toolName: correlatedToolName,
+            intent: correlatedIntent,
             resourceType,
             url,
             method: httpMethod,
             headers,
             postData,
             status: null,
+            responseHeaders: null,
+            responseBody: null,
             timestamp: now,
             curlCommand
         };
         pendingNetworkRequests.set(requestId, captured);
+        if (pendingNetworkRequests.size > 150) {
+            const oldestKey = pendingNetworkRequests.keys().next().value;
+            pendingNetworkRequests.delete(oldestKey);
+        }
 
         const task = taskStore.get(tabId);
         if (task) {
@@ -976,6 +1023,8 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
                     payload: {
                         requestId,
                         rpc_id: correlatedRpcId,
+                        tool_name: correlatedToolName,
+                        intent: correlatedIntent,
                         resourceType,
                         url,
                         method: httpMethod,
@@ -989,10 +1038,22 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     } else if (method === "Network.responseReceived") {
         const requestId = params?.requestId;
         const status = params?.response?.status || null;
+        const responseHeaders = params?.response?.headers || {};
         if (requestId && pendingNetworkRequests.has(requestId)) {
             const cap = pendingNetworkRequests.get(requestId);
             cap.status = status;
-            pendingNetworkRequests.delete(requestId);
+            cap.responseHeaders = responseHeaders;
+
+            // Attempt early response body extraction
+            try {
+                chrome.debugger.sendCommand({ tabId }, "Network.getResponseBody", { requestId }, (bodyRes) => {
+                    if (!chrome.runtime.lastError && bodyRes && bodyRes.body) {
+                        const bodyText = bodyRes.base64Encoded ? "[base64 binary]" : bodyRes.body;
+                        cap.responseBody = bodyText.length > 102400 ? bodyText.slice(0, 102400) + "\n... (truncated)" : bodyText;
+                        broadcastHudStateToAllTabs();
+                    }
+                });
+            } catch (_) {}
 
             if (currentWs && currentWs.readyState === WebSocket.OPEN) {
                 try {
@@ -1005,13 +1066,60 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
                             resourceType: cap.resourceType,
                             response: {
                                 status,
-                                headers: params?.response?.headers || {}
+                                headers: responseHeaders
                             }
                         }
                     }));
                 } catch (_) {}
             }
             broadcastHudStateToAllTabs();
+        }
+    } else if (method === "Network.loadingFinished") {
+        const requestId = params?.requestId;
+        if (requestId && pendingNetworkRequests.has(requestId)) {
+            const cap = pendingNetworkRequests.get(requestId);
+            try {
+                chrome.debugger.sendCommand({ tabId }, "Network.getResponseBody", { requestId }, (bodyRes) => {
+                    if (!chrome.runtime.lastError && bodyRes && bodyRes.body) {
+                        const bodyText = bodyRes.base64Encoded ? "[base64 binary]" : bodyRes.body;
+                        cap.responseBody = bodyText.length > 102400 ? bodyText.slice(0, 102400) + "\n... (truncated)" : bodyText;
+
+                        if (currentWs && currentWs.readyState === WebSocket.OPEN) {
+                            try {
+                                currentWs.send(JSON.stringify({
+                                    type: "EVENT",
+                                    event: "NETWORK_CAPTURE",
+                                    tabId,
+                                    payload: {
+                                        requestId: cap.requestId,
+                                        rpc_id: cap.rpcId,
+                                        tool_name: cap.toolName,
+                                        intent: cap.intent,
+                                        resourceType: cap.resourceType,
+                                        url: cap.url,
+                                        method: cap.method,
+                                        headers: cap.headers,
+                                        postData: cap.postData,
+                                        status: cap.status,
+                                        responseHeaders: cap.responseHeaders,
+                                        responseBody: cap.responseBody,
+                                        timestamp_ms: cap.timestamp
+                                    }
+                                }));
+                            } catch (_) {}
+                        }
+                        broadcastHudStateToAllTabs();
+                    }
+                    pendingNetworkRequests.delete(requestId);
+                });
+            } catch (_) {
+                pendingNetworkRequests.delete(requestId);
+            }
+        }
+    } else if (method === "Network.loadingFailed") {
+        const requestId = params?.requestId;
+        if (requestId && pendingNetworkRequests.has(requestId)) {
+            pendingNetworkRequests.delete(requestId);
         }
     }
 });
@@ -1044,7 +1152,33 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-    if (msg.action === "hud_focus_tab" && msg.tabId) {
+    if (msg.action === "hud_pin") {
+        const tid = Number(msg.tabId);
+        if (tid) {
+            if (msg.pinned) {
+                pinnedTabs.add(tid);
+                if (completionTimers.has(tid)) {
+                    clearTimeout(completionTimers.get(tid));
+                    completionTimers.delete(tid);
+                }
+            } else {
+                pinnedTabs.delete(tid);
+                const task = taskStore.get(tid);
+                const isDone = !task || task.status === "completed" || task.status === "error";
+                scheduleTaskCompletionCleanup(tid, isDone ? 1500 : IDLE_COMPLETE_HOLD_MS);
+            }
+        }
+        sendResponse({ success: true, pinned: tid ? pinnedTabs.has(tid) : false });
+        return true;
+    } else if (msg.action === "hud_dismiss") {
+        const tid = Number(msg.tabId);
+        if (tid) {
+            pinnedTabs.delete(tid);
+            removeTaskForTab(tid);
+        }
+        sendResponse({ success: true });
+        return true;
+    } else if (msg.action === "hud_focus_tab" && msg.tabId) {
         chrome.tabs.update(Number(msg.tabId), { active: true }).then(() => {
             sendResponse({ success: true });
         }).catch((e) => sendResponse({ success: false, error: e.message }));

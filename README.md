@@ -21,14 +21,23 @@ Most AI browser tools spin up a sterile, headless Chromium instance. This breaks
 **OnlyDOMs operates directly inside your live, authenticated Google Chrome browser.** Your GitHub sessions, Google Workspace, staging environments, internal VPN dashboards, and 2FA logins remain active and accessible to your coding agent.
 
 ### Core Highlights & Enhancements
-- 🎯 **Zero-Latency Task Intent Preview (`_intent`) & Top-Layer HUD Telemetry**:
+- 🎯 **Zero-Latency Task Intent Preview (`_intent`) & Modern Agent HUD**:
   - Every MCP tool accepts a 180-character (~30-word) `_intent` parameter.
   - The microsecond `mcp_protocol.rs` parses a `tools/call` request, it dispatches a pre-flight `HUD_STATE_UPDATE` frame (`Executing :: <cmd> on Tab :: #<id> (<title>)`) before awaiting the first CDP action, updating across every step of `execute_browser_pipeline` and `run_browser_test`.
+  - **Modern Web Guidance Compliant Glassmorphic HUD**: Floating, non-invasive top-layer pill (`<mcp-agent-hud>`) with closed Shadow DOM isolation, live status breathing ring, click-to-expand telemetry drawer, RPC execution stream, optimistic cURL inspector, interactive pushpin toggle with distinct pinned (filled cyan glow) and unpinned (outlined stroke) states, smart unpin auto-hide lifecycle, pointer-capture draggable repositioning, and instant dismiss controls.
+  - **Accordion Telemetry with Scroll Containment**: Smooth single-open accordion drawers with `flex-shrink: 0` preventing sibling card compression, and dedicated nested scrolling (`overflow-y: auto`, `overscroll-behavior: contain`) for long Intent, Agent Request, and Browser Generated Response payloads.
 - 🛡️ **Multi-Layer Agent Blindspot Protection (`filter::hud_sanitizer`)**:
   - Every WebSocket response from the extension is scrubbed in Rust (`hud_sanitizer::sanitize_extension_payload`) to strip `<mcp-agent-hud>`, `#__mcp_agent_hud_host__`, and `data-mcp-internal-ignore="true"` from JSON DOM trees, flat CDP attribute arrays, and raw `outerHTML` strings.
   - Compositor screenshots and PDFs automatically cloak the HUD, and coordinate/quadrant clicks (including bottom-right cell `P9`) pass cleanly through to the underlying page.
-- 🌐 **Optimistic Network Capture & Zero-Subprocess Rust cURL Replay (`replay_curl`)**:
+- 🎛️ **Modern Extension Popup Control Center**:
+  - Real-time connection badge with live daemon status and port indicator.
+  - Active agent session lease monitor with one-click individual tab detach and emergency "Detach All" killswitch.
+  - Site policy blacklist manager with interactive syntax templates (`*.wildcard`, `exact.com`, `prefix://`) and instant URL enforcement.
+  - Expandable daemon port override drawer with automated candidate scanning (`9222`, `9922`, `9223`, `9923`, `9224`, `9924`).
+- 🌐 **Optimistic Network Capture, Action Correlation & Zero-Subprocess Replay (`replay_curl` & `get_network_traffic`)**:
   - Captures XHR, Fetch, and Document calls (ignoring images, fonts, and stylesheets) within 3000ms of an agent step into a bounded 50-item ring buffer (`< 2MB` ceiling) per tab.
+  - **Action-to-cURL Correlation Binding**: Directly associates every captured network request with the active agent tool call (`rpc_id`, `tool_name`, `intent`), displaying triggering action tags in the HUD Network tab and allowing single-open accordion inspection of full request headers/body and browser response status/headers/body.
+  - **Agent Query Interface**: Agents can invoke `get_network_traffic` (or `replay_curl` with `action="list"` / `"get_network_traffic"`) filtering by `tab_id`, `action_id` / `rpc_id`, `request_id`, or `url_filter` to inspect complete request and response payloads.
   - Serializes shell-safe POSIX `curl` commands and replays them (or modified raw `curl` strings parsed via pure-Rust `shlex`) natively in Rust or via in-tab `fetch` without ever invoking `sh -c curl`.
 - 📄 **Visual Test & Feature Overview Document Pipeline (`run_browser_test` & `report_builder`)**:
   - Saves cloaked step screenshots (`webp`, `quality: 75`) directly to `test_reports/<run_id>/assets/step_<n>.webp` (zero base64 context bloat).

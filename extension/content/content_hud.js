@@ -1,23 +1,22 @@
 /**
  * OnlyDOMs Top-Layer Agent HUD (<mcp-agent-hud>)
  * Master Specification § 1, § 2, § 3, § 4, § 6
- *
- * Features:
- * - Immutable Sentinel Markers: <mcp-agent-hud id="__mcp_agent_hud_host__" data-mcp-internal-ignore="true" popover="manual">
- * - Closed Shadow DOM: attachShadow({ mode: "closed" })
- * - Top-Layer Mounting via native HTML Popover API (.showPopover()) at bottom: 20px; right: 20px
- * - Minimal, non-invasive modern glassmorphic pill displaying:
- *     1. Tab Header (Tab #<id> · <title>) + Cross-Tab [Switch ↗] button + Multi-Tab ⚡ N Tabs badge
- *     2. Task Intent Header (🎯 <180-char intent>)
- *     3. Live Command Status Ticker (Executing :: <cmd>) with 60fps rAF vertical crossfade
- * - Automatic Idle Auto-Hide: Morphs to ✓ Done on completion, holds 2500ms, then unmounts cleanly (never stuck on page)
- * - Expandable Glassmorphic Telemetry & Optimistic cURL Drawer on click
+ * Modern Web Guidance & Award-Grade Developer UX:
+ * - Drag & drop repositioning anywhere on screen with dedicated grip handle & viewport clamping
+ * - Accordion-expandable telemetry items showing Intent, Agent Request, Browser Response, and subtle Rust token sanitization footnote
+ * - Strict hit-test safety: zero unclickable background elements upon dismissal/timeout
+ * - Streamlined UI with reclaimed negative space (removed bloated hero card, slim 34px header)
+ * - 100% SVG iconography replacing all emojis
+ * - Clean typographical hierarchy with zero rainbow-pill clutter
+ * - Automatic downward/upward drawer flipping based on viewport position
+ * - Closed Shadow DOM isolation with zero page query leakage
+ * - Multi-tier semantic design tokens with dark glassmorphism
  */
 
 (() => {
     if (window !== window.top) return;
 
-    // Immediately clean up any legacy warning banner element if present on the page
+    // Immediately clean up any legacy banner elements if present
     const removeLegacyBanners = () => {
         const legacy = document.getElementById("onlydoms-banner-host");
         if (legacy && legacy.parentNode) {
@@ -34,10 +33,12 @@
     const HUD_TAG = "mcp-agent-hud";
     const HUD_ID = "__mcp_agent_hud_host__";
     const HUD_ATTR = "data-mcp-internal-ignore";
-    const AUTO_HIDE_DELAY_MS = 2500;
-    const UNMOUNT_ANIM_MS = 240;
+    const AUTO_HIDE_DELAY_MS = 6000;
+    const UNPIN_HIDE_DELAY_MS = 1200;
+    const UNMOUNT_ANIM_MS = 200;
+    const STORAGE_KEY_POS = "__onlydoms_hud_pos__";
 
-    // Define Custom Element <mcp-agent-hud> if not already registered
+    // Register Custom Element <mcp-agent-hud> if needed
     try {
         if (typeof customElements !== "undefined" && !customElements.get(HUD_TAG)) {
             class McpAgentHudElement extends HTMLElement {}
@@ -45,7 +46,7 @@
         }
     } catch (_) {}
 
-    // Remove any stale HUD host before mounting fresh closed Shadow DOM instance
+    // Clean up any stale host
     const existingHost = document.getElementById(HUD_ID);
     if (existingHost && existingHost.parentNode) {
         existingHost.parentNode.removeChild(existingHost);
@@ -56,12 +57,9 @@
     host.setAttribute(HUD_ATTR, "true");
     host.setAttribute("popover", "manual");
 
-    // Outer host styles: fixed in #top-layer at bottom-right, pointer-events: none for hit-test passthrough
+    // Host initial style
     host.style.setProperty("all", "initial", "important");
     host.style.setProperty("position", "fixed", "important");
-    host.style.setProperty("inset", "auto 20px 20px auto", "important");
-    host.style.setProperty("bottom", "20px", "important");
-    host.style.setProperty("right", "20px", "important");
     host.style.setProperty("margin", "0", "important");
     host.style.setProperty("padding", "0", "important");
     host.style.setProperty("border", "none", "important");
@@ -71,100 +69,178 @@
     host.style.setProperty("pointer-events", "none", "important");
     host.style.setProperty("display", "none", "important");
 
-    // Closed Shadow DOM prevents page JS & querySelectorAll from traversing internal HUD nodes
+    // Closed Shadow DOM
     const shadow = host.attachShadow({ mode: "closed" });
+
+    // Inline SVG Icon Library (100% vector, zero emojis)
+    const ICONS = {
+        grip: `<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" aria-hidden="true"><circle cx="5" cy="3.5" r="1.2"/><circle cx="11" cy="3.5" r="1.2"/><circle cx="5" cy="8" r="1.2"/><circle cx="11" cy="8" r="1.2"/><circle cx="5" cy="12.5" r="1.2"/><circle cx="11" cy="12.5" r="1.2"/></svg>`,
+        telemetry: `<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 4.5l3.5 3.5L2 11.5M7 11.5h7"/></svg>`,
+        network: `<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h10M10.5 2.5l2.5 2.5-2.5 2.5M13 11H3M5.5 13.5L3 11l2.5-2.5"/></svg>`,
+        copy: `<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="8.5" height="8.5" rx="1.5"/><path d="M3 11V3h8"/></svg>`,
+        detach: `<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 2H4a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h5M11 11l3-3-3-3M6 8h8"/></svg>`,
+        pin: `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g transform="rotate(45 12 12)"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></g></svg>`,
+        chevron: `<svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>`,
+        close: `<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>`,
+        check: `<svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg>`,
+        info: `<svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 7v4M8 5h.01"/></svg>`,
+        arrowRight: `<svg viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3l5 5-5 5"/></svg>`
+    };
 
     const styleEl = document.createElement("style");
     styleEl.textContent = `
         :host {
             all: initial !important;
-            display: block !important;
+            position: fixed !important;
+            z-index: 2147483647 !important;
             pointer-events: none !important;
-            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", Roboto, sans-serif !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            border: none !important;
+            background: transparent !important;
+            overflow: visible !important;
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Geist", "Inter", "Segoe UI", Roboto, sans-serif !important;
             color: #f8fafc !important;
             -webkit-font-smoothing: antialiased !important;
+            color-scheme: dark !important;
+        }
+
+        /* Strict popover-open gating: when closed, completely remove from layout & pointer events */
+        :host([popover]:popover-open) {
+            display: block !important;
+        }
+
+        :host(:not(:popover-open)),
+        :host([data-hidden="true"]),
+        .hud-root:not(.mounted),
+        .hud-root.unmounting {
+            display: none !important;
+            visibility: hidden !important;
+            pointer-events: none !important;
+            opacity: 0 !important;
+        }
+
+        :host([data-mcp-cloaked="true"]),
+        :host(.cloaked),
+        .hud-root.cloaked,
+        .hud-root.cloaked * {
+            display: none !important;
+            visibility: hidden !important;
+            opacity: 0 !important;
+            pointer-events: none !important;
         }
 
         * {
             box-sizing: border-box !important;
         }
 
+        /* Root flex container: fixed position, driven by draggable left/top */
         .hud-root {
-            position: relative !important;
+            position: fixed !important;
+            z-index: 2147483647 !important;
+            pointer-events: none !important;
             display: flex !important;
             flex-direction: column !important;
             align-items: flex-end !important;
             gap: 8px !important;
-            pointer-events: none !important;
-            will-change: transform, opacity, filter !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            will-change: transform, opacity, left, top !important;
             opacity: 0;
-            transform: translate3d(0, 16px, 0) scale(0.94);
-            filter: blur(4px);
+            transform: translate3d(0, 8px, 0) scale(0.97);
             transition:
-                opacity 320ms cubic-bezier(0.22, 1, 0.36, 1),
-                transform 320ms cubic-bezier(0.22, 1, 0.36, 1),
-                filter 320ms cubic-bezier(0.22, 1, 0.36, 1) !important;
+                opacity 220ms cubic-bezier(0.16, 1, 0.3, 1),
+                transform 220ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+        }
+
+        .hud-root.flip-down {
+            flex-direction: column-reverse !important;
         }
 
         .hud-root.mounted {
             opacity: 1 !important;
             transform: translate3d(0, 0, 0) scale(1) !important;
-            filter: blur(0px) !important;
         }
 
         .hud-root.unmounting {
             opacity: 0 !important;
-            transform: translate3d(0, 8px, 0) scale(0.96) !important;
-            filter: blur(2px) !important;
-            transition:
-                opacity 240ms cubic-bezier(0.4, 0, 1, 1),
-                transform 240ms cubic-bezier(0.4, 0, 1, 1),
-                filter 240ms cubic-bezier(0.4, 0, 1, 1) !important;
+            transform: translate3d(0, 6px, 0) scale(0.97) !important;
+            transition: opacity 160ms ease, transform 160ms ease !important;
         }
 
-        /* Expandable Glassmorphic Telemetry & cURL Drawer */
+        /* -------------------------------------------------------------
+           Expandable Telemetry & cURL Drawer
+        ------------------------------------------------------------- */
         .hud-drawer {
-            pointer-events: auto !important;
-            width: 380px !important;
-            max-width: calc(100vw - 40px) !important;
-            height: 320px !important;
-            background: rgba(13, 15, 22, 0.92) !important;
-            backdrop-filter: blur(20px) saturate(180%) !important;
-            -webkit-backdrop-filter: blur(20px) saturate(180%) !important;
-            border: 1px solid rgba(255, 255, 255, 0.11) !important;
+            pointer-events: none !important;
+            width: 440px !important;
+            max-width: calc(100vw - 28px) !important;
+            height: 380px !important;
+            max-height: calc(100vh - 100px) !important;
+            background: rgba(10, 14, 23, 0.96) !important;
+            backdrop-filter: blur(24px) saturate(190%) !important;
+            -webkit-backdrop-filter: blur(24px) saturate(190%) !important;
+            border: 1px solid rgba(255, 255, 255, 0.10) !important;
             border-radius: 14px !important;
-            box-shadow: 0 20px 45px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.04) inset !important;
-            display: flex !important;
+            box-shadow:
+                0 20px 50px -6px rgba(0, 0, 0, 0.75),
+                0 0 0 1px rgba(255, 255, 255, 0.04) inset,
+                0 2px 4px rgba(0, 0, 0, 0.4) !important;
+            display: none !important;
             flex-direction: column !important;
             overflow: hidden !important;
             transform-origin: bottom right !important;
-            transform: scale(0.92) translate3d(0, 10px, 0) !important;
+            transform: translate3d(0, 8px, 0) scale(0.97) !important;
             opacity: 0 !important;
-            visibility: hidden !important;
             transition:
-                transform 260ms cubic-bezier(0.16, 1, 0.3, 1),
-                opacity 220ms ease,
-                visibility 220ms ease !important;
+                display 200ms allow-discrete,
+                opacity 200ms cubic-bezier(0.16, 1, 0.3, 1),
+                transform 200ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+        }
+
+        .hud-root.flip-down .hud-drawer {
+            transform-origin: top right !important;
+            transform: translate3d(0, -8px, 0) scale(0.97) !important;
         }
 
         .hud-drawer.open {
-            transform: scale(1) translate3d(0, 0, 0) !important;
+            display: flex !important;
             opacity: 1 !important;
-            visibility: visible !important;
+            transform: translate3d(0, 0, 0) scale(1) !important;
+            pointer-events: auto !important;
+
+            @starting-style {
+                opacity: 0;
+                transform: translate3d(0, 8px, 0) scale(0.97);
+            }
         }
 
+        /* Slim 34px Header */
         .drawer-header {
             display: flex !important;
             align-items: center !important;
             justify-content: space-between !important;
-            padding: 8px 12px !important;
+            height: 38px !important;
+            padding: 0 10px !important;
             border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
             background: rgba(255, 255, 255, 0.02) !important;
+            gap: 8px !important;
+            flex-shrink: 0 !important;
+        }
+
+        .drawer-header-left {
+            display: flex !important;
+            align-items: center !important;
+            gap: 6px !important;
         }
 
         .drawer-tabs {
             display: flex !important;
-            gap: 4px !important;
+            gap: 3px !important;
+            background: rgba(0, 0, 0, 0.4) !important;
+            padding: 2px !important;
+            border-radius: 7px !important;
+            border: 1px solid rgba(255, 255, 255, 0.06) !important;
         }
 
         .drawer-tab-btn {
@@ -172,79 +248,423 @@
             cursor: pointer !important;
             font-size: 11px !important;
             font-weight: 600 !important;
-            padding: 4px 9px !important;
-            border-radius: 6px !important;
+            padding: 3px 8px !important;
+            border-radius: 5px !important;
+            color: #94a3b8 !important;
+            display: flex !important;
+            align-items: center !important;
+            gap: 5px !important;
+            transition: background 150ms ease, color 150ms ease !important;
+        }
+
+        .drawer-tab-btn:hover {
+            color: #f1f5f9 !important;
+            background: rgba(255, 255, 255, 0.06) !important;
+        }
+
+        .drawer-tab-btn.active {
+            background: rgba(56, 189, 248, 0.16) !important;
+            color: #7dd3fc !important;
+        }
+
+        .tab-count-badge {
+            font-size: 10px !important;
+            color: inherit !important;
+            opacity: 0.8 !important;
+        }
+
+        .drawer-header-right {
+            display: flex !important;
+            align-items: center !important;
+            gap: 4px !important;
+        }
+
+        .icon-action-btn {
+            all: unset !important;
+            cursor: pointer !important;
+            width: 24px !important;
+            height: 24px !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            border-radius: 5px !important;
             color: #94a3b8 !important;
             transition: background 150ms ease, color 150ms ease !important;
         }
 
-        .drawer-tab-btn.active {
-            background: rgba(99, 102, 241, 0.22) !important;
-            color: #e0e7ff !important;
+        .icon-action-btn:hover {
+            color: #ffffff !important;
+            background: rgba(255, 255, 255, 0.08) !important;
         }
 
-        .drawer-actions {
+        .icon-action-btn.danger:hover {
+            color: #f43f5e !important;
+            background: rgba(244, 63, 94, 0.15) !important;
+        }
+
+        /* Slim Single-Line Status Sub-Bar */
+        .drawer-sub-bar {
             display: flex !important;
             align-items: center !important;
-            gap: 6px !important;
+            justify-content: space-between !important;
+            padding: 5px 12px !important;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05) !important;
+            background: rgba(0, 0, 0, 0.25) !important;
+            font-size: 11px !important;
+            color: #94a3b8 !important;
+            flex-shrink: 0 !important;
         }
 
-        .kill-btn {
-            all: unset !important;
-            cursor: pointer !important;
+        .sub-bar-tab-title {
+            color: #e2e8f0 !important;
+            font-weight: 500 !important;
+            white-space: nowrap !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+            max-width: 280px !important;
+        }
+
+        .sub-bar-status {
+            display: flex !important;
+            align-items: center !important;
+            gap: 5px !important;
             font-size: 10.5px !important;
             font-weight: 600 !important;
-            color: #fda4af !important;
-            background: rgba(244, 63, 94, 0.16) !important;
-            border: 1px solid rgba(244, 63, 94, 0.3) !important;
-            padding: 3px 8px !important;
-            border-radius: 6px !important;
-            transition: background 150ms ease !important;
+            color: #38bdf8 !important;
         }
 
-        .kill-btn:hover {
-            background: rgba(244, 63, 94, 0.28) !important;
+        .sub-bar-status.completed {
+            color: #34d399 !important;
         }
 
+        .sub-bar-status.error {
+            color: #f87171 !important;
+        }
+
+        /* Scrollable Telemetry Stream */
         .drawer-body {
-            flex: 1 !important;
+            flex: 1 1 auto !important;
+            min-height: 0 !important;
             overflow-y: auto !important;
+            overscroll-behavior: contain !important;
             padding: 8px 10px !important;
             display: flex !important;
             flex-direction: column !important;
             gap: 6px !important;
-            font-size: 11px !important;
+            font-size: 11.5px !important;
+            scrollbar-width: thin !important;
+            scrollbar-color: rgba(255, 255, 255, 0.15) transparent !important;
         }
 
-        .log-item {
-            padding: 6px 8px !important;
+        .drawer-body::-webkit-scrollbar {
+            width: 5px !important;
+        }
+
+        .drawer-body::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.15) !important;
+            border-radius: 999px !important;
+        }
+
+        /* -------------------------------------------------------------
+           Accordion Telemetry Cards
+        ------------------------------------------------------------- */
+        .accordion-item {
+            flex-shrink: 0 !important;
             border-radius: 8px !important;
-            background: rgba(255, 255, 255, 0.035) !important;
+            background: rgba(255, 255, 255, 0.03) !important;
             border: 1px solid rgba(255, 255, 255, 0.06) !important;
+            display: flex !important;
+            flex-direction: column !important;
+            overflow: hidden !important;
+            transition: background 150ms ease, border-color 150ms ease !important;
+        }
+
+        .accordion-item:hover {
+            background: rgba(255, 255, 255, 0.05) !important;
+            border-color: rgba(255, 255, 255, 0.1) !important;
+        }
+
+        .accordion-item.expanded {
+            background: rgba(255, 255, 255, 0.05) !important;
+            border-color: rgba(56, 189, 248, 0.3) !important;
+        }
+
+        .accordion-header {
+            display: flex !important;
+            align-items: center !important;
+            justify-content: space-between !important;
+            padding: 7px 9px !important;
+            cursor: pointer !important;
+            user-select: none !important;
+            gap: 8px !important;
+        }
+
+        .accordion-title-group {
+            display: flex !important;
+            align-items: center !important;
+            gap: 7px !important;
+            overflow: hidden !important;
+            min-width: 0 !important;
+            flex: 1 !important;
+        }
+
+        .accordion-chevron {
+            font-size: 10px !important;
+            color: #64748b !important;
+            transition: transform 180ms ease, color 150ms ease !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            flex-shrink: 0 !important;
+        }
+
+        .accordion-item.expanded .accordion-chevron {
+            transform: rotate(90deg) !important;
+            color: #38bdf8 !important;
+        }
+
+        .step-index-label {
+            font-size: 10.5px !important;
+            font-family: ui-monospace, "SF Mono", monospace !important;
+            color: #64748b !important;
+            flex-shrink: 0 !important;
+        }
+
+        .tool-name-label {
+            font-family: ui-monospace, "SF Mono", monospace !important;
+            font-size: 11px !important;
+            font-weight: 600 !important;
+            color: #93c5fd !important;
+            white-space: nowrap !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+        }
+
+        .cmd-preview-label {
+            font-size: 11px !important;
+            color: #94a3b8 !important;
+            white-space: nowrap !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+            flex: 1 !important;
+        }
+
+        .accordion-meta {
+            display: flex !important;
+            align-items: center !important;
+            gap: 6px !important;
+            font-size: 10.5px !important;
+            color: #64748b !important;
+            flex-shrink: 0 !important;
+        }
+
+        .latency-tag {
+            font-size: 10px !important;
+            color: #94a3b8 !important;
+        }
+
+        /* Expanded Accordion Body */
+        .accordion-content {
+            display: none !important;
+            padding: 8px 10px 10px !important;
+            border-top: 1px solid rgba(255, 255, 255, 0.05) !important;
+            background: rgba(0, 0, 0, 0.3) !important;
+            flex-direction: column !important;
+            gap: 7px !important;
+            font-size: 11px !important;
+            max-height: 280px !important;
+            overflow-y: auto !important;
+            overscroll-behavior: contain !important;
+            scrollbar-width: thin !important;
+            scrollbar-color: rgba(255, 255, 255, 0.2) transparent !important;
+        }
+
+        .accordion-content::-webkit-scrollbar {
+            width: 5px !important;
+        }
+
+        .accordion-content::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.2) !important;
+            border-radius: 4px !important;
+        }
+
+        .accordion-item.expanded .accordion-content {
+            display: flex !important;
+        }
+
+        .detail-section {
             display: flex !important;
             flex-direction: column !important;
             gap: 3px !important;
         }
 
-        .log-top {
+        .detail-heading {
+            font-size: 10px !important;
+            font-weight: 700 !important;
+            text-transform: uppercase !important;
+            letter-spacing: 0.04em !important;
+            color: #94a3b8 !important;
             display: flex !important;
-            justify-content: space-between !important;
             align-items: center !important;
-            color: #cbd5e1 !important;
-            font-weight: 600 !important;
+            justify-content: space-between !important;
         }
 
-        .log-cmd {
-            font-family: ui-monospace, SFMono-Regular, Menlo, monospace !important;
+        .detail-copy-btn {
+            all: unset !important;
+            cursor: pointer !important;
+            font-size: 10px !important;
+            color: #38bdf8 !important;
+            padding: 1px 4px !important;
+            border-radius: 3px !important;
+            transition: background 150ms ease !important;
+        }
+
+        .detail-copy-btn:hover {
+            background: rgba(56, 189, 248, 0.15) !important;
+        }
+
+        .code-block {
+            font-family: ui-monospace, "SF Mono", monospace !important;
             font-size: 10.5px !important;
-            color: #93c5fd !important;
-            word-break: break-all !important;
+            color: #cbd5e1 !important;
+            background: rgba(0, 0, 0, 0.45) !important;
+            border: 1px solid rgba(255, 255, 255, 0.06) !important;
+            padding: 6px 8px !important;
+            border-radius: 5px !important;
+            white-space: pre-wrap !important;
+            word-break: break-word !important;
+            overflow-wrap: anywhere !important;
+            line-height: 1.4 !important;
+            max-height: 140px !important;
+            overflow: auto !important;
+            overscroll-behavior: contain !important;
+            scrollbar-width: thin !important;
+            scrollbar-color: rgba(255, 255, 255, 0.2) transparent !important;
+        }
+
+        .code-block::-webkit-scrollbar {
+            width: 5px !important;
+            height: 5px !important;
+        }
+
+        .code-block::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.2) !important;
+            border-radius: 4px !important;
+        }
+
+        .code-block.response-block {
+            max-height: 180px !important;
+            background: rgba(2, 6, 23, 0.65) !important;
+            border-color: rgba(56, 189, 248, 0.18) !important;
+            outline: none !important;
+        }
+
+        .code-block.response-block:focus-visible {
+            border-color: rgba(56, 189, 248, 0.5) !important;
+            box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.3) !important;
+        }
+
+        .rust-sanitization-note {
+            display: flex !important;
+            align-items: flex-start !important;
+            gap: 5px !important;
+            font-size: 10px !important;
+            color: #64748b !important;
+            line-height: 1.35 !important;
+            margin-top: 2px !important;
+            padding-top: 4px !important;
+            border-top: 1px dashed rgba(255, 255, 255, 0.06) !important;
+        }
+
+        .rust-sanitization-note svg {
+            flex-shrink: 0 !important;
+            margin-top: 1px !important;
+            color: #38bdf8 !important;
+        }
+
+        /* Network cURL rows & badges */
+        .curl-row {
+            display: flex !important;
+            align-items: center !important;
+            gap: 6px !important;
+            font-size: 11px !important;
+            padding: 6px 8px !important;
+            border-radius: 6px !important;
+            background: rgba(255, 255, 255, 0.02) !important;
+            border: 1px solid rgba(255, 255, 255, 0.05) !important;
+            flex-shrink: 0 !important;
+        }
+
+        .method-label {
+            font-family: ui-monospace, "SF Mono", monospace !important;
+            font-size: 10px !important;
+            font-weight: 700 !important;
+            color: #34d399 !important;
+            flex-shrink: 0 !important;
+        }
+
+        .method-label.post {
+            color: #38bdf8 !important;
+        }
+
+        .method-label.other {
+            color: #fbbf24 !important;
+        }
+
+        .status-pill {
+            font-family: ui-monospace, "SF Mono", monospace !important;
+            font-size: 9.5px !important;
+            font-weight: 700 !important;
+            padding: 1px 5px !important;
+            border-radius: 4px !important;
+            flex-shrink: 0 !important;
+        }
+
+        .status-pill.ok {
+            color: #34d399 !important;
+            background: rgba(52, 211, 153, 0.12) !important;
+            border: 1px solid rgba(52, 211, 153, 0.25) !important;
+        }
+
+        .status-pill.err {
+            color: #f43f5e !important;
+            background: rgba(244, 63, 94, 0.15) !important;
+            border: 1px solid rgba(244, 63, 94, 0.3) !important;
+        }
+
+        .status-pill.pending {
+            color: #94a3b8 !important;
+            background: rgba(148, 163, 184, 0.12) !important;
+            border: 1px solid rgba(148, 163, 184, 0.25) !important;
+        }
+
+        .network-action-badge {
+            font-family: ui-monospace, "SF Mono", monospace !important;
+            font-size: 9.5px !important;
+            font-weight: 600 !important;
+            color: #a78bfa !important;
+            background: rgba(167, 139, 250, 0.12) !important;
+            border: 1px solid rgba(167, 139, 250, 0.25) !important;
+            padding: 1px 5px !important;
+            border-radius: 4px !important;
+            white-space: nowrap !important;
+            flex-shrink: 0 !important;
+        }
+
+        .curl-url {
+            font-family: ui-monospace, "SF Mono", monospace !important;
+            font-size: 10.5px !important;
+            color: #cbd5e1 !important;
+            white-space: nowrap !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+            flex: 1 !important;
         }
 
         .curl-actions {
             display: flex !important;
-            gap: 6px !important;
-            margin-top: 4px !important;
+            gap: 4px !important;
+            flex-shrink: 0 !important;
         }
 
         .mini-btn {
@@ -252,49 +672,55 @@
             cursor: pointer !important;
             font-size: 10px !important;
             font-weight: 600 !important;
-            padding: 2px 7px !important;
-            border-radius: 5px !important;
-            background: rgba(255, 255, 255, 0.08) !important;
+            padding: 2px 6px !important;
+            border-radius: 4px !important;
+            background: rgba(255, 255, 255, 0.06) !important;
             color: #e2e8f0 !important;
+            transition: background 150ms ease, color 150ms ease !important;
         }
 
         .mini-btn:hover {
-            background: rgba(99, 102, 241, 0.3) !important;
+            background: rgba(56, 189, 248, 0.2) !important;
+            color: #38bdf8 !important;
         }
 
-        /* Floating Pill Container */
+        .empty-placeholder {
+            padding: 20px 14px !important;
+            text-align: center !important;
+            color: #64748b !important;
+            font-size: 11.5px !important;
+            line-height: 1.4 !important;
+            border: 1px dashed rgba(255, 255, 255, 0.08) !important;
+            border-radius: 8px !important;
+        }
+
+        /* -------------------------------------------------------------
+           Compact Floating Pill Shell (Reclaimed Negative Space)
+        ------------------------------------------------------------- */
         .pill-shell {
             pointer-events: auto !important;
             position: relative !important;
-            width: 320px !important;
-            max-width: calc(100vw - 32px) !important;
-            border-radius: 14px !important;
+            width: 330px !important;
+            max-width: calc(100vw - 28px) !important;
+            border-radius: 12px !important;
             padding: 1px !important;
-            background: rgba(255, 255, 255, 0.12) !important;
+            background: rgba(255, 255, 255, 0.10) !important;
             box-shadow:
-                0 10px 28px -4px rgba(0, 0, 0, 0.5),
-                0 2px 8px rgba(0, 0, 0, 0.3) !important;
+                0 12px 30px -4px rgba(0, 0, 0, 0.65),
+                0 2px 6px rgba(0, 0, 0, 0.4) !important;
             overflow: hidden !important;
-            transition:
-                width 280ms cubic-bezier(0.16, 1, 0.3, 1),
-                height 280ms cubic-bezier(0.16, 1, 0.3, 1),
-                border-radius 240ms ease !important;
+            transition: border-radius 180ms ease, box-shadow 180ms ease !important;
         }
 
-        .pill-shell.multi-tab {
-            width: 356px !important;
-        }
-
-        /* Ambient Conic Border Shimmer when running */
         .pill-shimmer {
             position: absolute !important;
-            inset: -120% !important;
+            inset: -140% !important;
             background: conic-gradient(
                 from 0deg,
                 transparent 0deg,
                 transparent 240deg,
-                rgba(56, 189, 248, 0.75) 295deg,
-                rgba(129, 140, 248, 0.9) 335deg,
+                rgba(56, 189, 248, 0.65) 290deg,
+                rgba(129, 140, 248, 0.85) 330deg,
                 transparent 360deg
             ) !important;
             opacity: 0 !important;
@@ -304,7 +730,7 @@
 
         .pill-shell.running .pill-shimmer {
             opacity: 1 !important;
-            animation: hudSpin 2.6s linear infinite !important;
+            animation: hudSpin 3s linear infinite !important;
         }
 
         @keyframes hudSpin {
@@ -313,26 +739,27 @@
 
         .pill-inner {
             position: relative !important;
-            background: rgba(15, 17, 24, 0.90) !important;
-            backdrop-filter: blur(16px) saturate(180%) !important;
-            -webkit-backdrop-filter: blur(16px) saturate(180%) !important;
-            border-radius: 13px !important;
-            padding: 8px 11px !important;
+            background: rgba(11, 15, 24, 0.94) !important;
+            backdrop-filter: blur(20px) saturate(180%) !important;
+            -webkit-backdrop-filter: blur(20px) saturate(180%) !important;
+            border-radius: 11px !important;
+            padding: 6px 10px !important;
             display: flex !important;
             flex-direction: column !important;
-            gap: 5px !important;
+            gap: 4px !important;
             cursor: pointer !important;
             user-select: none !important;
             -webkit-user-select: none !important;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
         }
 
-        /* Row 1: Tab Header + Status Dot + Multi-tab badge + Actions */
+        /* Row 1: Header (Grip + Dot + Title + Controls) */
         .pill-header-row {
             display: flex !important;
             align-items: center !important;
             justify-content: space-between !important;
             gap: 6px !important;
-            min-height: 18px !important;
+            min-height: 20px !important;
         }
 
         .header-left {
@@ -343,10 +770,38 @@
             flex: 1 !important;
         }
 
+        /* Drag Grip Affordance */
+        .hud-drag-handle {
+            all: unset !important;
+            cursor: grab !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            color: #64748b !important;
+            padding: 2px !important;
+            border-radius: 3px !important;
+            touch-action: none !important;
+            user-select: none !important;
+            -webkit-user-select: none !important;
+            flex-shrink: 0 !important;
+            transition: color 150ms ease, background 150ms ease !important;
+        }
+
+        .hud-drag-handle:hover {
+            color: #f1f5f9 !important;
+            background: rgba(255, 255, 255, 0.08) !important;
+        }
+
+        .hud-drag-handle.dragging {
+            cursor: grabbing !important;
+            color: #38bdf8 !important;
+        }
+
+        /* Status Dot */
         .status-dot-wrap {
             position: relative !important;
-            width: 14px !important;
-            height: 14px !important;
+            width: 10px !important;
+            height: 10px !important;
             display: inline-flex !important;
             align-items: center !important;
             justify-content: center !important;
@@ -354,8 +809,8 @@
         }
 
         .status-dot {
-            width: 7px !important;
-            height: 7px !important;
+            width: 6px !important;
+            height: 6px !important;
             border-radius: 999px !important;
             background: #38bdf8 !important;
             box-shadow: 0 0 8px rgba(56, 189, 248, 0.8) !important;
@@ -363,15 +818,15 @@
 
         .status-ring {
             position: absolute !important;
-            inset: 1px !important;
+            inset: -2px !important;
             border-radius: 999px !important;
-            border: 1.5px solid rgba(56, 189, 248, 0.65) !important;
-            animation: pulseRing 1.6s cubic-bezier(0.22, 1, 0.36, 1) infinite !important;
+            border: 1px solid rgba(56, 189, 248, 0.6) !important;
+            animation: pulseRing 1.8s cubic-bezier(0.22, 1, 0.36, 1) infinite !important;
         }
 
         @keyframes pulseRing {
-            0% { transform: scale(0.75); opacity: 0.9; }
-            100% { transform: scale(1.55); opacity: 0; }
+            0% { transform: scale(0.7); opacity: 0.9; }
+            100% { transform: scale(1.6); opacity: 0; }
         }
 
         .pill-shell.completed .status-dot {
@@ -388,41 +843,7 @@
             box-shadow: 0 0 8px rgba(244, 63, 94, 0.8) !important;
         }
 
-        .done-check {
-            display: none !important;
-            font-size: 11px !important;
-            font-weight: 800 !important;
-            color: #10b981 !important;
-            line-height: 1 !important;
-        }
-
-        .pill-shell.completed .done-check {
-            display: inline-block !important;
-        }
-
-        .pill-shell.completed .status-dot {
-            display: none !important;
-        }
-
-        .multi-tab-badge {
-            display: none !important;
-            align-items: center !important;
-            gap: 3px !important;
-            font-size: 10px !important;
-            font-weight: 700 !important;
-            padding: 1px 6px !important;
-            border-radius: 999px !important;
-            background: rgba(99, 102, 241, 0.24) !important;
-            color: #c7d2fe !important;
-            border: 1px solid rgba(129, 140, 248, 0.35) !important;
-            flex-shrink: 0 !important;
-        }
-
-        .pill-shell.multi-tab .multi-tab-badge {
-            display: inline-flex !important;
-        }
-
-        .tab-header-label {
+        .pill-title-text {
             font-size: 11px !important;
             font-weight: 600 !important;
             color: #e2e8f0 !important;
@@ -432,104 +853,99 @@
             letter-spacing: -0.01em !important;
         }
 
-        .tab-id-pill {
+        .pill-tab-id {
             color: #94a3b8 !important;
+            font-family: ui-monospace, "SF Mono", monospace !important;
             font-weight: 500 !important;
-            font-family: ui-monospace, SFMono-Regular, Menlo, monospace !important;
             font-size: 10.5px !important;
+            margin-right: 4px !important;
         }
 
         .header-right {
             display: flex !important;
             align-items: center !important;
-            gap: 4px !important;
+            gap: 3px !important;
             flex-shrink: 0 !important;
-        }
-
-        .jump-btn {
-            all: unset !important;
-            cursor: pointer !important;
-            font-size: 10px !important;
-            font-weight: 600 !important;
-            color: #7dd3fc !important;
-            background: rgba(56, 189, 248, 0.14) !important;
-            border: 1px solid rgba(56, 189, 248, 0.28) !important;
-            padding: 2px 6px !important;
-            border-radius: 5px !important;
-            transition: background 150ms ease !important;
-        }
-
-        .jump-btn:hover {
-            background: rgba(56, 189, 248, 0.26) !important;
         }
 
         .icon-btn {
             all: unset !important;
             cursor: pointer !important;
-            color: #64748b !important;
-            font-size: 12px !important;
-            line-height: 1 !important;
-            padding: 2px 4px !important;
+            color: #94a3b8 !important;
+            padding: 3px !important;
             border-radius: 4px !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
             transition: color 150ms ease, background 150ms ease !important;
         }
 
         .icon-btn:hover {
-            color: #e2e8f0 !important;
+            color: #ffffff !important;
             background: rgba(255, 255, 255, 0.08) !important;
         }
 
-        /* Row 2: Task Intent Banner */
-        .intent-row {
-            display: flex !important;
-            align-items: center !important;
-            gap: 5px !important;
-            font-size: 11px !important;
-            line-height: 1.3 !important;
-            color: #cbd5e1 !important;
-            white-space: nowrap !important;
-            overflow: hidden !important;
-            text-overflow: ellipsis !important;
+        .icon-btn.pinned,
+        .icon-action-btn.pinned {
+            color: #38bdf8 !important;
+            background: rgba(56, 189, 248, 0.2) !important;
+            box-shadow: 0 0 10px rgba(56, 189, 248, 0.45) !important;
         }
 
-        .intent-prefix {
-            color: #a5b4fc !important;
-            font-weight: 600 !important;
-            flex-shrink: 0 !important;
+        .icon-btn.pinned svg path,
+        .icon-action-btn.pinned svg path {
+            fill: #38bdf8 !important;
+            fill-opacity: 0.4 !important;
+            stroke: #38bdf8 !important;
         }
 
-        .intent-text {
-            overflow: hidden !important;
-            text-overflow: ellipsis !important;
-            white-space: nowrap !important;
-            color: #f1f5f9 !important;
+        .icon-btn.pinned svg line,
+        .icon-action-btn.pinned svg line {
+            stroke: #38bdf8 !important;
         }
 
-        /* Row 3: Live Command Ticker with 60fps crossfade */
+        .details-chevron {
+            transition: transform 200ms ease !important;
+        }
+
+        .details-chevron.open {
+            transform: rotate(180deg) !important;
+        }
+
+        /* Row 2: Streamlined Command / Intent Ticker */
         .cmd-ticker-viewport {
             position: relative !important;
             height: 18px !important;
             overflow: hidden !important;
-            background: rgba(255, 255, 255, 0.04) !important;
-            border: 1px solid rgba(255, 255, 255, 0.06) !important;
-            border-radius: 6px !important;
-            padding: 0 7px !important;
+            background: rgba(0, 0, 0, 0.35) !important;
+            border: 1px solid rgba(255, 255, 255, 0.05) !important;
+            border-radius: 5px !important;
+            padding: 0 6px !important;
             display: flex !important;
             align-items: center !important;
+            gap: 5px !important;
+        }
+
+        .cmd-prompt {
+            color: #38bdf8 !important;
+            font-family: ui-monospace, "SF Mono", monospace !important;
+            font-size: 10px !important;
+            font-weight: 700 !important;
+            flex-shrink: 0 !important;
         }
 
         .cmd-ticker-item {
             width: 100% !important;
-            font-family: ui-monospace, SFMono-Regular, Menlo, monospace !important;
+            font-family: ui-monospace, "SF Mono", monospace !important;
             font-size: 10px !important;
-            color: #7dd3fc !important;
+            color: #cbd5e1 !important;
             white-space: nowrap !important;
             overflow: hidden !important;
             text-overflow: ellipsis !important;
             will-change: transform, opacity !important;
             transition:
-                transform 160ms cubic-bezier(0.22, 1, 0.36, 1),
-                opacity 160ms cubic-bezier(0.22, 1, 0.36, 1) !important;
+                transform 140ms cubic-bezier(0.22, 1, 0.36, 1),
+                opacity 140ms cubic-bezier(0.22, 1, 0.36, 1) !important;
         }
 
         .cmd-ticker-item.slide-out {
@@ -543,77 +959,112 @@
             transition: none !important;
         }
 
-        /* Multi-tab horizontal swipe carousel controls */
-        .carousel-nav {
-            display: none !important;
-            align-items: center !important;
-            justify-content: space-between !important;
-            padding-top: 2px !important;
-            font-size: 10px !important;
-            color: #94a3b8 !important;
-        }
-
-        .pill-shell.multi-tab .carousel-nav {
-            display: flex !important;
-        }
-
         @media (prefers-reduced-motion: reduce) {
             .hud-root,
             .hud-drawer,
             .pill-shell,
             .cmd-ticker-item,
             .pill-shimmer,
-            .status-ring {
+            .status-ring,
+            .details-chevron,
+            .accordion-chevron {
                 animation: none !important;
                 transition: none !important;
             }
         }
     `;
 
-    // Build DOM inside Closed Shadow Root
+    // Build DOM structure inside Closed Shadow Root
     const root = document.createElement("div");
     root.className = "hud-root";
 
-    // Expandable Drawer
+    // 1. Expandable Telemetry Drawer
     const drawer = document.createElement("div");
     drawer.className = "hud-drawer";
 
     const drawerHeader = document.createElement("div");
     drawerHeader.className = "drawer-header";
 
+    const drawerHeaderLeft = document.createElement("div");
+    drawerHeaderLeft.className = "drawer-header-left";
+
+    const drawerDragHandle = document.createElement("button");
+    drawerDragHandle.className = "hud-drag-handle";
+    drawerDragHandle.innerHTML = ICONS.grip;
+    drawerDragHandle.title = "Drag to move HUD anywhere";
+    drawerDragHandle.setAttribute("aria-label", "Drag to move HUD anywhere");
+
     const drawerTabs = document.createElement("div");
     drawerTabs.className = "drawer-tabs";
 
     const rpcTabBtn = document.createElement("button");
     rpcTabBtn.className = "drawer-tab-btn active";
-    rpcTabBtn.textContent = "Live RPC Stream";
+    rpcTabBtn.innerHTML = `${ICONS.telemetry}<span>Telemetry</span><span id="__hud_rpc_count" class="tab-count-badge">0</span>`;
 
     const curlTabBtn = document.createElement("button");
     curlTabBtn.className = "drawer-tab-btn";
-    curlTabBtn.textContent = "Network & cURL";
+    curlTabBtn.innerHTML = `${ICONS.network}<span>Network</span><span id="__hud_curl_count" class="tab-count-badge">0</span>`;
 
     drawerTabs.appendChild(rpcTabBtn);
     drawerTabs.appendChild(curlTabBtn);
 
-    const drawerActions = document.createElement("div");
-    drawerActions.className = "drawer-actions";
+    drawerHeaderLeft.appendChild(drawerDragHandle);
+    drawerHeaderLeft.appendChild(drawerTabs);
+
+    const drawerHeaderRight = document.createElement("div");
+    drawerHeaderRight.className = "drawer-header-right";
+
+    const drawerPinBtn = document.createElement("button");
+    drawerPinBtn.className = "icon-action-btn";
+    drawerPinBtn.innerHTML = ICONS.pin;
+    drawerPinBtn.title = "Pin HUD to stay on screen";
+
+    const copySummaryBtn = document.createElement("button");
+    copySummaryBtn.className = "icon-action-btn";
+    copySummaryBtn.innerHTML = ICONS.copy;
+    copySummaryBtn.title = "Copy task summary to clipboard";
 
     const killBtn = document.createElement("button");
-    killBtn.className = "kill-btn";
-    killBtn.textContent = "Detach ⏹";
-    killBtn.title = "Pause and detach agent from this tab";
+    killBtn.className = "icon-action-btn danger";
+    killBtn.innerHTML = ICONS.detach;
+    killBtn.title = "Detach agent debugger from this tab";
 
-    drawerActions.appendChild(killBtn);
-    drawerHeader.appendChild(drawerTabs);
-    drawerHeader.appendChild(drawerActions);
+    const drawerCloseBtn = document.createElement("button");
+    drawerCloseBtn.className = "icon-action-btn";
+    drawerCloseBtn.innerHTML = ICONS.close;
+    drawerCloseBtn.title = "Close drawer";
+
+    drawerHeaderRight.appendChild(drawerPinBtn);
+    drawerHeaderRight.appendChild(copySummaryBtn);
+    drawerHeaderRight.appendChild(killBtn);
+    drawerHeaderRight.appendChild(drawerCloseBtn);
+
+    drawerHeader.appendChild(drawerHeaderLeft);
+    drawerHeader.appendChild(drawerHeaderRight);
+
+    // Slim Single-Line Status Sub-Bar (replaces the bloated 120px hero card)
+    const drawerSubBar = document.createElement("div");
+    drawerSubBar.className = "drawer-sub-bar";
+
+    const subBarTitle = document.createElement("span");
+    subBarTitle.className = "sub-bar-tab-title";
+    subBarTitle.textContent = "Tab #1 · Active Tab";
+
+    const subBarStatus = document.createElement("span");
+    subBarStatus.className = "sub-bar-status";
+    subBarStatus.textContent = "RUNNING";
+
+    drawerSubBar.appendChild(subBarTitle);
+    drawerSubBar.appendChild(subBarStatus);
 
     const drawerBody = document.createElement("div");
     drawerBody.className = "drawer-body";
 
     drawer.appendChild(drawerHeader);
+    drawer.appendChild(drawerSubBar);
     drawer.appendChild(drawerBody);
 
-    // Compact Pill Shell
+    // 2. Compact Floating Pill Shell
     const pillShell = document.createElement("div");
     pillShell.className = "pill-shell running";
 
@@ -623,12 +1074,18 @@
     const pillInner = document.createElement("div");
     pillInner.className = "pill-inner";
 
-    // Row 1: Tab Header
+    // Row 1: Header (Drag Handle + Status + Title + Actions)
     const headerRow = document.createElement("div");
     headerRow.className = "pill-header-row";
 
     const headerLeft = document.createElement("div");
     headerLeft.className = "header-left";
+
+    const pillDragHandle = document.createElement("button");
+    pillDragHandle.className = "hud-drag-handle";
+    pillDragHandle.innerHTML = ICONS.grip;
+    pillDragHandle.title = "Drag to move HUD anywhere";
+    pillDragHandle.setAttribute("aria-label", "Drag to move HUD anywhere");
 
     const statusWrap = document.createElement("span");
     statusWrap.className = "status-dot-wrap";
@@ -636,77 +1093,54 @@
     statusRing.className = "status-ring";
     const statusDot = document.createElement("span");
     statusDot.className = "status-dot";
-    const doneCheck = document.createElement("span");
-    doneCheck.className = "done-check";
-    doneCheck.textContent = "✓";
     statusWrap.appendChild(statusRing);
     statusWrap.appendChild(statusDot);
-    statusWrap.appendChild(doneCheck);
 
-    const multiTabBadge = document.createElement("span");
-    multiTabBadge.className = "multi-tab-badge";
-    multiTabBadge.textContent = "⚡ 1 Tab";
+    const pillTitle = document.createElement("span");
+    pillTitle.className = "pill-title-text";
+    pillTitle.innerHTML = `<span class="pill-tab-id">#1</span>Active Tab`;
 
-    const tabHeaderLabel = document.createElement("span");
-    tabHeaderLabel.className = "tab-header-label";
-
+    headerLeft.appendChild(pillDragHandle);
     headerLeft.appendChild(statusWrap);
-    headerLeft.appendChild(multiTabBadge);
-    headerLeft.appendChild(tabHeaderLabel);
+    headerLeft.appendChild(pillTitle);
 
     const headerRight = document.createElement("div");
     headerRight.className = "header-right";
 
-    const jumpBtn = document.createElement("button");
-    jumpBtn.className = "jump-btn";
-    jumpBtn.textContent = "Switch ↗";
-    jumpBtn.style.setProperty("display", "none", "important");
+    const detailsBtn = document.createElement("button");
+    detailsBtn.className = "icon-btn";
+    detailsBtn.innerHTML = `<span class="details-chevron">${ICONS.chevron}</span>`;
+    detailsBtn.title = "Toggle detailed telemetry drawer";
 
-    const prevTabBtn = document.createElement("button");
-    prevTabBtn.className = "icon-btn";
-    prevTabBtn.textContent = "‹";
-    prevTabBtn.title = "Previous active tab task";
-    prevTabBtn.style.setProperty("display", "none", "important");
-
-    const nextTabBtn = document.createElement("button");
-    nextTabBtn.className = "icon-btn";
-    nextTabBtn.textContent = "›";
-    nextTabBtn.title = "Next active tab task";
-    nextTabBtn.style.setProperty("display", "none", "important");
+    const pinBtn = document.createElement("button");
+    pinBtn.className = "icon-btn";
+    pinBtn.innerHTML = ICONS.pin;
+    pinBtn.title = "Pin HUD to stay on screen";
 
     const closeBtn = document.createElement("button");
     closeBtn.className = "icon-btn";
-    closeBtn.textContent = "×";
-    closeBtn.title = "Hide HUD pill";
+    closeBtn.innerHTML = ICONS.close;
+    closeBtn.title = "Dismiss HUD";
 
-    headerRight.appendChild(prevTabBtn);
-    headerRight.appendChild(nextTabBtn);
-    headerRight.appendChild(jumpBtn);
+    headerRight.appendChild(detailsBtn);
+    headerRight.appendChild(pinBtn);
     headerRight.appendChild(closeBtn);
 
     headerRow.appendChild(headerLeft);
     headerRow.appendChild(headerRight);
 
-    // Row 2: Task Intent
-    const intentRow = document.createElement("div");
-    intentRow.className = "intent-row";
-    const intentPrefix = document.createElement("span");
-    intentPrefix.className = "intent-prefix";
-    intentPrefix.textContent = "🎯 Intent";
-    const intentText = document.createElement("span");
-    intentText.className = "intent-text";
-    intentRow.appendChild(intentPrefix);
-    intentRow.appendChild(intentText);
-
-    // Row 3: Command Ticker
+    // Row 2: Streamlined Command Ticker
     const cmdViewport = document.createElement("div");
     cmdViewport.className = "cmd-ticker-viewport";
+    const cmdPrompt = document.createElement("span");
+    cmdPrompt.className = "cmd-prompt";
+    cmdPrompt.textContent = "›";
     const cmdItem = document.createElement("div");
     cmdItem.className = "cmd-ticker-item";
+    cmdViewport.appendChild(cmdPrompt);
     cmdViewport.appendChild(cmdItem);
 
     pillInner.appendChild(headerRow);
-    pillInner.appendChild(intentRow);
     pillInner.appendChild(cmdViewport);
 
     pillShell.appendChild(shimmer);
@@ -718,11 +1152,12 @@
     shadow.appendChild(styleEl);
     shadow.appendChild(root);
 
+    // Mount host to DOM
     const mountHostToDom = () => {
         removeLegacyBanners();
-        const parent = document.documentElement || document.body;
-        if (parent && !host.parentNode) {
-            parent.appendChild(host);
+        const targetParent = document.documentElement || document.body;
+        if (targetParent && host.parentNode !== targetParent) {
+            targetParent.appendChild(host);
         }
     };
 
@@ -732,17 +1167,129 @@
         window.addEventListener("DOMContentLoaded", mountHostToDom, { once: true });
     }
 
-    // Internal HUD State
+    // -------------------------------------------------------------
+    // Draggable Repositioning Engine with Viewport Clamping
+    // -------------------------------------------------------------
+    let posX = null;
+    let posY = null;
+    let isDragging = false;
+    let dragStartX = 0;
+    let dragStartY = 0;
+    let initialLeft = 0;
+    let initialTop = 0;
+
+    // Load saved coordinates from sessionStorage
+    try {
+        const rawPos = sessionStorage.getItem(STORAGE_KEY_POS);
+        if (rawPos) {
+            const parsed = JSON.parse(rawPos);
+            if (typeof parsed.x === "number" && typeof parsed.y === "number") {
+                posX = parsed.x;
+                posY = parsed.y;
+            }
+        }
+    } catch (_) {}
+
+    function applyPosition(x, y) {
+        const winW = window.innerWidth;
+        const winH = window.innerHeight;
+        const rootW = root.offsetWidth || 340;
+        const rootH = root.offsetHeight || 60;
+
+        let clampX = Math.max(10, Math.min(x, winW - rootW - 10));
+        let clampY = Math.max(10, Math.min(y, winH - rootH - 10));
+
+        root.style.setProperty("left", `${clampX}px`, "important");
+        root.style.setProperty("top", `${clampY}px`, "important");
+        root.style.setProperty("right", "auto", "important");
+        root.style.setProperty("bottom", "auto", "important");
+
+        // Flip drawer downward if dragged in the upper 45% of screen
+        if (clampY < winH * 0.45) {
+            root.classList.add("flip-down");
+        } else {
+            root.classList.remove("flip-down");
+        }
+
+        posX = clampX;
+        posY = clampY;
+
+        try {
+            sessionStorage.setItem(STORAGE_KEY_POS, JSON.stringify({ x: clampX, y: clampY }));
+        } catch (_) {}
+    }
+
+    function initDrag(handleEl) {
+        handleEl.addEventListener("pointerdown", (e) => {
+            if (e.button !== 0) return;
+            e.stopPropagation();
+            e.preventDefault();
+
+            isDragging = true;
+            dragStartX = e.clientX;
+            dragStartY = e.clientY;
+
+            const rect = root.getBoundingClientRect();
+            initialLeft = rect.left;
+            initialTop = rect.top;
+
+            handleEl.classList.add("dragging");
+            try {
+                handleEl.setPointerCapture(e.pointerId);
+            } catch (_) {}
+
+            const onPointerMove = (moveEvt) => {
+                if (!isDragging) return;
+                const deltaX = moveEvt.clientX - dragStartX;
+                const deltaY = moveEvt.clientY - dragStartY;
+                applyPosition(initialLeft + deltaX, initialTop + deltaY);
+            };
+
+            const onPointerUp = (upEvt) => {
+                isDragging = false;
+                handleEl.classList.remove("dragging");
+                try {
+                    handleEl.releasePointerCapture(upEvt.pointerId);
+                } catch (_) {}
+                window.removeEventListener("pointermove", onPointerMove);
+                window.removeEventListener("pointerup", onPointerUp);
+                window.removeEventListener("pointercancel", onPointerUp);
+            };
+
+            window.addEventListener("pointermove", onPointerMove, { passive: true });
+            window.addEventListener("pointerup", onPointerUp, { once: true });
+            window.addEventListener("pointercancel", onPointerUp, { once: true });
+        });
+    }
+
+    initDrag(pillDragHandle);
+    initDrag(drawerDragHandle);
+
+    // Keep clamped on resize
+    window.addEventListener("resize", () => {
+        if (posX != null && posY != null) {
+            applyPosition(posX, posY);
+        }
+    }, { passive: true });
+
+    // -------------------------------------------------------------
+    // Internal State & Lifecycle Management
+    // -------------------------------------------------------------
     let activeTasks = [];
     let selectedTaskIdx = 0;
     let viewerTabId = null;
     let isMounted = false;
     let isDrawerOpen = false;
+    let isHovered = false;
+    let isPinned = false;
     let activeDrawerTab = "rpc"; // "rpc" | "curl"
     let lastRenderedCmd = "";
     let autoHideTimer = null;
     let unmountTimer = null;
+    let hoverLeaveTimer = null;
     let hudPort = null;
+    let openTelemetryRpcId = null;
+    let openNetworkRequestId = null;
 
     function clearTimers() {
         if (autoHideTimer) {
@@ -753,28 +1300,133 @@
             clearTimeout(unmountTimer);
             unmountTimer = null;
         }
+        if (hoverLeaveTimer) {
+            clearTimeout(hoverLeaveTimer);
+            hoverLeaveTimer = null;
+        }
+    }
+
+    function toggleDrawer(forceState) {
+        const target = forceState !== undefined ? !!forceState : !isDrawerOpen;
+        if (target === isDrawerOpen) return;
+        isDrawerOpen = target;
+
+        const chevron = shadow.querySelector(".details-chevron");
+        if (chevron) {
+            if (isDrawerOpen) {
+                chevron.classList.add("open");
+            } else {
+                chevron.classList.remove("open");
+            }
+        }
+
+        if (isDrawerOpen) {
+            drawer.classList.add("open");
+            renderDrawer(activeTasks[selectedTaskIdx] || activeTasks[0]);
+        } else {
+            drawer.classList.remove("open");
+        }
+    }
+
+    function setPinnedState(pinned) {
+        isPinned = !!pinned;
+        if (isPinned) {
+            clearTimers();
+            pinBtn.classList.add("pinned");
+            pinBtn.title = "HUD is pinned. Click to unpin.";
+            if (drawerPinBtn) {
+                drawerPinBtn.classList.add("pinned");
+                drawerPinBtn.title = "HUD is pinned. Click to unpin.";
+            }
+        } else {
+            pinBtn.classList.remove("pinned");
+            pinBtn.title = "Pin HUD to screen";
+            if (drawerPinBtn) {
+                drawerPinBtn.classList.remove("pinned");
+                drawerPinBtn.title = "Pin HUD to screen";
+            }
+
+            // If tasks are finished, auto-dismiss promptly on unpin
+            const allDone = activeTasks.length === 0 || activeTasks.every((t) => t.status === "completed" || t.status === "error");
+            if (allDone) {
+                scheduleIdleAutoHide(UNPIN_HIDE_DELAY_MS);
+            }
+        }
+
+        const currentTask = activeTasks[selectedTaskIdx] || activeTasks[0];
+        if (currentTask && currentTask.tabId && typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
+            try {
+                chrome.runtime.sendMessage({ action: "hud_pin", tabId: currentTask.tabId, pinned: isPinned });
+            } catch (_) {}
+        }
     }
 
     function showPopoverTopLayer() {
         mountHostToDom();
         clearTimers();
+
+        host.removeAttribute("data-hidden");
         host.style.setProperty("display", "block", "important");
+        host.style.removeProperty("pointer-events");
+
         try {
-            if (typeof host.showPopover === "function") {
+            if (typeof host.showPopover === "function" && !host.matches(":popover-open")) {
                 host.showPopover();
             }
         } catch (_) {}
+
         requestAnimationFrame(() => {
             root.classList.remove("unmounting");
             root.classList.add("mounted");
             isMounted = true;
+
+            if (posX != null && posY != null) {
+                applyPosition(posX, posY);
+            } else {
+                // Default position: bottom-right
+                const defaultX = window.innerWidth - (root.offsetWidth || 340) - 20;
+                const defaultY = window.innerHeight - (root.offsetHeight || 60) - 20;
+                applyPosition(defaultX, defaultY);
+            }
         });
     }
 
+    function setCloakState(cloaked) {
+        if (cloaked) {
+            host.setAttribute("data-mcp-cloaked", "true");
+            host.classList.add("cloaked");
+            host.style.setProperty("display", "none", "important");
+            host.style.setProperty("pointer-events", "none", "important");
+            root.classList.add("cloaked");
+        } else {
+            host.removeAttribute("data-mcp-cloaked");
+            host.classList.remove("cloaked");
+            host.style.setProperty("display", "block", "important");
+            root.classList.remove("cloaked");
+        }
+    }
+
     function hidePopoverTopLayer() {
+        if (isDrawerOpen || isPinned || isHovered) {
+            return;
+        }
+        forceHidePopoverTopLayer();
+    }
+
+    function forceHidePopoverTopLayer() {
         clearTimers();
-        isDrawerOpen = false;
-        drawer.classList.remove("open");
+        isPinned = false;
+        isHovered = false;
+        toggleDrawer(false);
+        if (pinBtn) pinBtn.classList.remove("pinned");
+        if (drawerPinBtn) drawerPinBtn.classList.remove("pinned");
+
+        // CRITICAL HIT-TEST FIX: Immediately release pointer events across all nodes
+        host.setAttribute("data-hidden", "true");
+        host.style.setProperty("pointer-events", "none", "important");
+        root.style.setProperty("pointer-events", "none", "important");
+        pillShell.style.setProperty("pointer-events", "none", "important");
+
         root.classList.remove("mounted");
         root.classList.add("unmounting");
         isMounted = false;
@@ -786,14 +1438,16 @@
                 }
             } catch (_) {}
             host.style.setProperty("display", "none", "important");
+            host.style.setProperty("pointer-events", "none", "important");
             root.classList.remove("unmounting");
         }, UNMOUNT_ANIM_MS);
     }
 
     function scheduleIdleAutoHide(delayMs = AUTO_HIDE_DELAY_MS) {
         if (autoHideTimer) clearTimeout(autoHideTimer);
+        if (isDrawerOpen || isHovered || isPinned) return;
         autoHideTimer = setTimeout(() => {
-            if (!isDrawerOpen) {
+            if (!isDrawerOpen && !isHovered && !isPinned) {
                 hidePopoverTopLayer();
             }
         }, delayMs);
@@ -822,116 +1476,411 @@
                         cmdItem.classList.remove("slide-in-start");
                     });
                 });
-            }, 90);
+            }, 75);
         });
     }
 
+    // Format JSON with safe character bounding and automatic parsing for nested strings
+    function formatJsonSafely(val, maxChars = 8000) {
+        if (val === undefined || val === null) return "None";
+        try {
+            let target = val;
+            if (typeof target === "string") {
+                const trimmed = target.trim();
+                if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+                    try {
+                        target = JSON.parse(trimmed);
+                    } catch (_) {}
+                }
+            }
+            let str = typeof target === "string" ? target : JSON.stringify(target, null, 2);
+            if (str.length > maxChars) {
+                return str.slice(0, maxChars) + "\n... (truncated for display)";
+            }
+            return str;
+        } catch (_) {
+            return String(val);
+        }
+    }
+
     function renderDrawer(currentTask) {
-        if (!isDrawerOpen || !currentTask) return;
+        if (!currentTask) return;
+
+        const task = currentTask;
+        const status = task.status || "running";
+
+        // Update slim status sub-bar
+        subBarTitle.textContent = `Tab #${task.tabId} · ${task.tabTitle || "Active Tab"}`;
+        subBarStatus.className = "sub-bar-status";
+        if (status === "completed") {
+            subBarStatus.classList.add("completed");
+            subBarStatus.innerHTML = `${ICONS.check}<span>COMPLETED</span>`;
+        } else if (status === "error") {
+            subBarStatus.classList.add("error");
+            subBarStatus.innerHTML = `<span>ERROR</span>`;
+        } else {
+            subBarStatus.innerHTML = `<span>RUNNING</span>`;
+        }
+
+        const logs = Array.isArray(task.logs) ? task.logs : [];
+        const calls = Array.isArray(task.networkCalls) ? task.networkCalls : [];
+
+        const rpcBadge = shadow.getElementById("__hud_rpc_count");
+        if (rpcBadge) rpcBadge.textContent = String(logs.length);
+
+        const curlBadge = shadow.getElementById("__hud_curl_count");
+        if (curlBadge) curlBadge.textContent = String(calls.length);
+
         drawerBody.innerHTML = "";
 
         if (activeDrawerTab === "rpc") {
-            const logs = Array.isArray(currentTask.logs) ? currentTask.logs : [];
             if (logs.length === 0) {
                 const empty = document.createElement("div");
-                empty.style.color = "#64748b";
-                empty.textContent = "No RPC tool calls recorded yet.";
+                empty.className = "empty-placeholder";
+                empty.innerHTML = `<strong>Awaiting Tool Invocations</strong><br>Current step: ${task.executingCmd || "Idle"}`;
                 drawerBody.appendChild(empty);
                 return;
             }
-            for (const entry of logs.slice().reverse()) {
+
+            logs.slice().reverse().forEach((entry, idx) => {
+                const entryId = entry.rpcId || (entry.timestamp ? `log_ts_${entry.timestamp}` : `log_orig_${logs.indexOf(entry)}`);
+                const isExpanded = openTelemetryRpcId === entryId;
+
                 const item = document.createElement("div");
-                item.className = "log-item";
+                item.className = `accordion-item ${isExpanded ? "expanded" : ""}`;
 
-                const top = document.createElement("div");
-                top.className = "log-top";
-                const toolSpan = document.createElement("span");
-                toolSpan.textContent = entry.toolName || entry.tool_name || "mcp_tool";
-                const latSpan = document.createElement("span");
-                latSpan.style.color = "#94a3b8";
-                latSpan.textContent = entry.latencyMs != null ? `${entry.latencyMs}ms` : (entry.status || "running");
-                top.appendChild(toolSpan);
-                top.appendChild(latSpan);
+                // Header
+                const hdr = document.createElement("div");
+                hdr.className = "accordion-header";
 
-                const cmd = document.createElement("div");
-                cmd.className = "log-cmd";
-                cmd.textContent = entry.executingCmd || entry.executing_cmd || "";
+                const titleGroup = document.createElement("div");
+                titleGroup.className = "accordion-title-group";
 
-                item.appendChild(top);
-                item.appendChild(cmd);
+                const chevron = document.createElement("span");
+                chevron.className = "accordion-chevron";
+                chevron.innerHTML = ICONS.arrowRight;
+
+                const stepIdx = document.createElement("span");
+                stepIdx.className = "step-index-label";
+                stepIdx.textContent = `#${logs.length - idx}`;
+
+                const toolName = document.createElement("span");
+                toolName.className = "tool-name-label";
+                toolName.textContent = entry.toolName || entry.tool_name || "mcp_tool";
+
+                const cmdPreview = document.createElement("span");
+                cmdPreview.className = "cmd-preview-label";
+                cmdPreview.textContent = entry.intent || entry.executingCmd || "";
+
+                titleGroup.appendChild(chevron);
+                titleGroup.appendChild(stepIdx);
+                titleGroup.appendChild(toolName);
+                titleGroup.appendChild(cmdPreview);
+
+                const meta = document.createElement("div");
+                meta.className = "accordion-meta";
+                if (entry.latencyMs != null) {
+                    const lat = document.createElement("span");
+                    lat.className = "latency-tag";
+                    lat.textContent = `${entry.latencyMs}ms`;
+                    meta.appendChild(lat);
+                }
+
+                hdr.appendChild(titleGroup);
+                hdr.appendChild(meta);
+
+                // Content
+                const content = document.createElement("div");
+                content.className = "accordion-content";
+
+                // 1. Intent Section
+                if (entry.intent) {
+                    const intentSec = document.createElement("div");
+                    intentSec.className = "detail-section";
+                    const intentHdr = document.createElement("div");
+                    intentHdr.className = "detail-heading";
+                    intentHdr.textContent = "Step Intent";
+                    const intentBox = document.createElement("div");
+                    intentBox.className = "code-block";
+                    intentBox.tabIndex = 0;
+                    intentBox.textContent = entry.intent;
+                    intentSec.appendChild(intentHdr);
+                    intentSec.appendChild(intentBox);
+                    content.appendChild(intentSec);
+                }
+
+                // 2. Agent Request Section
+                const reqSec = document.createElement("div");
+                reqSec.className = "detail-section";
+                const reqHdr = document.createElement("div");
+                reqHdr.className = "detail-heading";
+                reqHdr.innerHTML = `<span>Agent Request</span><button type="button" class="detail-copy-btn">Copy</button>`;
+                const reqBox = document.createElement("div");
+                reqBox.className = "code-block";
+                reqBox.tabIndex = 0;
+                const reqFormatted = formatJsonSafely(entry.requestData || entry.executingCmd || { status: entry.status });
+                reqBox.textContent = reqFormatted;
+                reqHdr.querySelector("button").addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    navigator.clipboard.writeText(reqFormatted);
+                    reqHdr.querySelector("button").textContent = "✓ Copied";
+                    setTimeout(() => { reqHdr.querySelector("button").textContent = "Copy"; }, 1200);
+                });
+                reqSec.appendChild(reqHdr);
+                reqSec.appendChild(reqBox);
+                content.appendChild(reqSec);
+
+                // 3. Browser Generated Response Section (Nested Scroll)
+                const respSec = document.createElement("div");
+                respSec.className = "detail-section";
+                const respHdr = document.createElement("div");
+                respHdr.className = "detail-heading";
+                respHdr.innerHTML = `<span>Browser Generated Response</span><button type="button" class="detail-copy-btn">Copy</button>`;
+                const respBox = document.createElement("div");
+                respBox.className = "code-block response-block";
+                respBox.tabIndex = 0;
+                respBox.setAttribute("role", "region");
+                respBox.setAttribute("aria-label", "Browser Generated Response");
+                respBox.title = "Scrollable response payload (wheel or keyboard arrows)";
+                const respFormatted = formatJsonSafely(entry.responseData || { status: entry.status, latency_ms: entry.latencyMs });
+                respBox.textContent = respFormatted;
+                respHdr.querySelector("button").addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    navigator.clipboard.writeText(respFormatted);
+                    respHdr.querySelector("button").textContent = "✓ Copied";
+                    setTimeout(() => { respHdr.querySelector("button").textContent = "Copy"; }, 1200);
+                });
+                respSec.appendChild(respHdr);
+                respSec.appendChild(respBox);
+
+                // Subtle Rust Sanitization Footnote
+                const rustNote = document.createElement("div");
+                rustNote.className = "rust-sanitization-note";
+                rustNote.innerHTML = `${ICONS.info}<span>Raw browser response (scrubbed & sanitized by OnlyDOMs Rust engine before entering LLM context).</span>`;
+                respSec.appendChild(rustNote);
+
+                content.appendChild(respSec);
+
+                // Single-open accordion toggle: exactly one open item at a time
+                hdr.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    const wasExpanded = item.classList.contains("expanded");
+                    drawerBody.querySelectorAll(".accordion-item.expanded").forEach((el) => {
+                        el.classList.remove("expanded");
+                    });
+                    if (wasExpanded) {
+                        openTelemetryRpcId = null;
+                    } else {
+                        openTelemetryRpcId = entryId;
+                        item.classList.add("expanded");
+                    }
+                });
+
+                item.appendChild(hdr);
+                item.appendChild(content);
                 drawerBody.appendChild(item);
-            }
+            });
         } else {
-            const calls = Array.isArray(currentTask.networkCalls) ? currentTask.networkCalls : [];
             if (calls.length === 0) {
                 const empty = document.createElement("div");
-                empty.style.color = "#64748b";
-                empty.textContent = "No correlated XHR/Fetch calls captured in the last 3000ms.";
+                empty.className = "empty-placeholder";
+                empty.textContent = "No network XHR/Fetch calls intercepted in this window.";
                 drawerBody.appendChild(empty);
                 return;
             }
-            for (const net of calls.slice().reverse()) {
+
+            calls.slice().reverse().forEach((net, idx) => {
+                const reqId = net.requestId || (net.timestamp ? `net_ts_${net.timestamp}` : `net_orig_${calls.indexOf(net)}`);
+                const isExpanded = openNetworkRequestId === reqId;
+
                 const item = document.createElement("div");
-                item.className = "log-item";
+                item.className = `accordion-item ${isExpanded ? "expanded" : ""}`;
 
-                const top = document.createElement("div");
-                top.className = "log-top";
-                const methodSpan = document.createElement("span");
-                methodSpan.textContent = `${net.method || "GET"} ${net.status ? `[${net.status}]` : ""}`;
-                const typeSpan = document.createElement("span");
-                typeSpan.style.color = "#94a3b8";
-                typeSpan.textContent = net.resourceType || "Fetch";
-                top.appendChild(methodSpan);
-                top.appendChild(typeSpan);
+                // Header
+                const hdr = document.createElement("div");
+                hdr.className = "accordion-header";
 
-                const urlDiv = document.createElement("div");
-                urlDiv.className = "log-cmd";
-                urlDiv.textContent = net.url || "";
+                const titleGroup = document.createElement("div");
+                titleGroup.className = "accordion-title-group";
 
-                const actions = document.createElement("div");
-                actions.className = "curl-actions";
+                const chevron = document.createElement("span");
+                chevron.className = "accordion-chevron";
+                chevron.innerHTML = ICONS.arrowRight;
+
+                const method = (net.method || "GET").toUpperCase();
+                const methodLabel = document.createElement("span");
+                methodLabel.className = `method-label ${method === "GET" ? "get" : method === "POST" ? "post" : "other"}`;
+                methodLabel.textContent = method;
+
+                const statusLabel = document.createElement("span");
+                const st = net.status;
+                const isSuccess = st && st >= 200 && st < 300;
+                const isErr = st && st >= 400;
+                statusLabel.className = `status-pill ${isSuccess ? "ok" : isErr ? "err" : "pending"}`;
+                statusLabel.textContent = st ? String(st) : "···";
+
+                const actionBadge = document.createElement("span");
+                actionBadge.className = "network-action-badge";
+                const actionLabel = net.toolName || (net.rpcId ? `#${net.rpcId}` : null);
+                if (actionLabel) {
+                    actionBadge.textContent = `via ${actionLabel}`;
+                    if (net.intent) actionBadge.title = `Triggering Action Intent: ${net.intent}`;
+                } else {
+                    actionBadge.style.display = "none";
+                }
+
+                const urlSpan = document.createElement("span");
+                urlSpan.className = "curl-url";
+                urlSpan.textContent = net.url || "";
+                urlSpan.title = net.url || "";
+
+                titleGroup.appendChild(chevron);
+                titleGroup.appendChild(methodLabel);
+                titleGroup.appendChild(statusLabel);
+                if (actionLabel) titleGroup.appendChild(actionBadge);
+                titleGroup.appendChild(urlSpan);
+
+                const actGroup = document.createElement("div");
+                actGroup.className = "curl-actions";
 
                 const copyBtn = document.createElement("button");
                 copyBtn.className = "mini-btn";
-                copyBtn.textContent = "📋 Copy cURL";
+                copyBtn.textContent = "Copy cURL";
+                copyBtn.title = "Copy shell-safe cURL to clipboard";
                 copyBtn.addEventListener("click", (e) => {
                     e.stopPropagation();
                     if (navigator.clipboard && net.curlCommand) {
                         navigator.clipboard.writeText(net.curlCommand);
                         copyBtn.textContent = "✓ Copied";
-                        setTimeout(() => { copyBtn.textContent = "📋 Copy cURL"; }, 1200);
+                        setTimeout(() => { copyBtn.textContent = "Copy cURL"; }, 1200);
                     }
                 });
 
                 const replayBtn = document.createElement("button");
                 replayBtn.className = "mini-btn";
-                replayBtn.textContent = "⚡ Replay via Rust";
+                replayBtn.textContent = "Replay";
+                replayBtn.title = "Replay cURL via native engine";
                 replayBtn.addEventListener("click", (e) => {
                     e.stopPropagation();
                     replayBtn.textContent = "Running...";
                     chrome.runtime.sendMessage(
                         {
                             action: "hud_replay_curl",
-                            tabId: currentTask.tabId,
+                            tabId: task.tabId,
                             requestId: net.requestId,
                             curl: net.curlCommand
                         },
                         (resp) => {
                             const code = resp?.result?.status_code || resp?.result?.status || "OK";
                             replayBtn.textContent = `✓ ${code}`;
-                            setTimeout(() => { replayBtn.textContent = "⚡ Replay via Rust"; }, 1800);
+                            setTimeout(() => { replayBtn.textContent = "Replay"; }, 1600);
                         }
                     );
                 });
 
-                actions.appendChild(copyBtn);
-                actions.appendChild(replayBtn);
+                actGroup.appendChild(copyBtn);
+                actGroup.appendChild(replayBtn);
 
-                item.appendChild(top);
-                item.appendChild(urlDiv);
-                item.appendChild(actions);
+                hdr.appendChild(titleGroup);
+                hdr.appendChild(actGroup);
+
+                // Body (Request + Response with nested scroll)
+                const content = document.createElement("div");
+                content.className = "accordion-content";
+
+                // Section 1: Triggering Action Details
+                if (net.rpcId || net.toolName || net.intent) {
+                    const actSec = document.createElement("div");
+                    actSec.className = "detail-section";
+                    const actHdr = document.createElement("div");
+                    actHdr.className = "detail-heading";
+                    actHdr.textContent = "Triggering Agent Action";
+                    const actBox = document.createElement("div");
+                    actBox.className = "code-block";
+                    actBox.tabIndex = 0;
+                    actBox.textContent = `Action Tool: ${net.toolName || "Agent Action"} (ID: ${net.rpcId || "untracked"})\nAction Intent: ${net.intent || "No intent description recorded"}`;
+                    actSec.appendChild(actHdr);
+                    actSec.appendChild(actBox);
+                    content.appendChild(actSec);
+                }
+
+                // Section 2: Request Details
+                const reqSec = document.createElement("div");
+                reqSec.className = "detail-section";
+                const reqHdr = document.createElement("div");
+                reqHdr.className = "detail-heading";
+                reqHdr.innerHTML = `<span>Request Details (${method})</span><button type="button" class="detail-copy-btn">Copy</button>`;
+                const reqBox = document.createElement("div");
+                reqBox.className = "code-block";
+                reqBox.tabIndex = 0;
+                const reqDetails = {
+                    method,
+                    url: net.url,
+                    headers: net.headers || {},
+                    body: net.postData || null
+                };
+                const reqFormatted = formatJsonSafely(reqDetails);
+                reqBox.textContent = reqFormatted;
+                reqHdr.querySelector("button").addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    navigator.clipboard.writeText(reqFormatted);
+                    reqHdr.querySelector("button").textContent = "✓ Copied";
+                    setTimeout(() => { reqHdr.querySelector("button").textContent = "Copy"; }, 1200);
+                });
+                reqSec.appendChild(reqHdr);
+                reqSec.appendChild(reqBox);
+                content.appendChild(reqSec);
+
+                // Section 3: Response Details (Nested Scroll)
+                const respSec = document.createElement("div");
+                respSec.className = "detail-section";
+                const respHdr = document.createElement("div");
+                respHdr.className = "detail-heading";
+                respHdr.innerHTML = `<span>Response Details [${net.status || "Pending"}]</span><button type="button" class="detail-copy-btn">Copy</button>`;
+                const respBox = document.createElement("div");
+                respBox.className = "code-block response-block";
+                respBox.tabIndex = 0;
+                respBox.setAttribute("role", "region");
+                respBox.setAttribute("aria-label", "Network Response Details");
+                respBox.title = "Scrollable response payload (wheel or keyboard arrows)";
+                const respPayload = {
+                    status: net.status || "Pending / In-flight",
+                    headers: net.responseHeaders || {},
+                    body: net.responseBody || "(No response body captured / in-flight)"
+                };
+                const respFormatted = typeof net.responseBody === "string" && !net.responseHeaders
+                    ? net.responseBody
+                    : formatJsonSafely(respPayload);
+                respBox.textContent = respFormatted;
+                respHdr.querySelector("button").addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    navigator.clipboard.writeText(respFormatted);
+                    respHdr.querySelector("button").textContent = "✓ Copied";
+                    setTimeout(() => { respHdr.querySelector("button").textContent = "Copy"; }, 1200);
+                });
+                respSec.appendChild(respHdr);
+                respSec.appendChild(respBox);
+                content.appendChild(respSec);
+
+                // Single-open accordion toggle: exactly one open item at a time
+                hdr.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    const wasExpanded = item.classList.contains("expanded");
+                    drawerBody.querySelectorAll(".accordion-item.expanded").forEach((el) => {
+                        el.classList.remove("expanded");
+                    });
+                    if (wasExpanded) {
+                        openNetworkRequestId = null;
+                    } else {
+                        openNetworkRequestId = reqId;
+                        item.classList.add("expanded");
+                    }
+                });
+
+                item.appendChild(hdr);
+                item.appendChild(content);
                 drawerBody.appendChild(item);
-            }
+            });
         }
     }
 
@@ -939,16 +1888,22 @@
         if (currentTabId != null) {
             viewerTabId = currentTabId;
         }
-        activeTasks = Array.isArray(tasks) ? tasks : [];
+
+        if (Array.isArray(tasks) && tasks.length > 0) {
+            activeTasks = tasks;
+        } else if (isDrawerOpen || isPinned || isHovered) {
+            // Retain while inspecting
+        } else {
+            activeTasks = [];
+        }
 
         if (activeTasks.length === 0) {
-            if (isMounted) {
+            if (isMounted && !isDrawerOpen && !isPinned && !isHovered) {
                 hidePopoverTopLayer();
             }
             return;
         }
 
-        // Prefer showing the task on the current viewer tab first, or most recently updated task
         if (selectedTaskIdx >= activeTasks.length) {
             selectedTaskIdx = 0;
         }
@@ -956,7 +1911,7 @@
         const task = activeTasks[selectedTaskIdx] || activeTasks[0];
         const status = task.status || "running";
 
-        pillShell.classList.remove("running", "completed", "error", "multi-tab");
+        pillShell.classList.remove("running", "completed", "error");
         if (status === "completed") {
             pillShell.classList.add("completed");
         } else if (status === "error") {
@@ -965,46 +1920,11 @@
             pillShell.classList.add("running");
         }
 
-        if (activeTasks.length > 1) {
-            pillShell.classList.add("multi-tab");
-            multiTabBadge.textContent = `⚡ ${activeTasks.length} Tabs`;
-            prevTabBtn.style.setProperty("display", "inline-flex", "important");
-            nextTabBtn.style.setProperty("display", "inline-flex", "important");
-        } else {
-            prevTabBtn.style.setProperty("display", "none", "important");
-            nextTabBtn.style.setProperty("display", "none", "important");
-        }
-
         const cleanTitle = (task.tabTitle || "Active Tab").trim();
-        tabHeaderLabel.innerHTML = "";
-        const idSpan = document.createElement("span");
-        idSpan.className = "tab-id-pill";
-        idSpan.textContent = `Tab #${task.tabId}`;
-        const sepSpan = document.createElement("span");
-        sepSpan.textContent = ` · ${cleanTitle}`;
-        tabHeaderLabel.appendChild(idSpan);
-        tabHeaderLabel.appendChild(sepSpan);
-        tabHeaderLabel.title = `Tab #${task.tabId} — ${cleanTitle}`;
+        pillTitle.innerHTML = `<span class="pill-tab-id">#${task.tabId}</span>${cleanTitle}`;
+        pillTitle.title = `Tab #${task.tabId} — ${cleanTitle}`;
 
-        // Show [Switch ↗] button whenever the user is viewing a different tab than the task's tab
-        if (viewerTabId && task.tabId && Number(viewerTabId) !== Number(task.tabId)) {
-            jumpBtn.style.setProperty("display", "inline-flex", "important");
-            jumpBtn.onclick = (e) => {
-                e.stopPropagation();
-                chrome.runtime.sendMessage({ action: "hud_focus_tab", tabId: task.tabId });
-            };
-        } else {
-            jumpBtn.style.setProperty("display", "none", "important");
-        }
-
-        // Intent row
-        const intentStr = (task.intent || "Executing browser automation step").slice(0, 180);
-        intentPrefix.textContent = status === "completed" ? "✓ Done ::" : "🎯 Intent ::";
-        intentText.textContent = intentStr;
-        intentRow.title = intentStr;
-
-        // Live command ticker
-        const execStr = task.executingCmd || `Executing :: active step on Tab :: #${task.tabId} (${cleanTitle})`;
+        const execStr = task.intent || task.executingCmd || `Tab #${task.tabId} active`;
         animateCmdTicker(execStr);
 
         if (!isMounted) {
@@ -1015,11 +1935,10 @@
             renderDrawer(task);
         }
 
-        // Automatic idle auto-hide 2500ms after completion so the pill is NEVER stuck permanently
         const allDone = activeTasks.every((t) => t.status === "completed" || t.status === "error");
-        if (allDone) {
+        if (allDone && !isPinned && !isDrawerOpen && !isHovered) {
             scheduleIdleAutoHide(AUTO_HIDE_DELAY_MS);
-        } else {
+        } else if (!allDone) {
             if (autoHideTimer) {
                 clearTimeout(autoHideTimer);
                 autoHideTimer = null;
@@ -1027,41 +1946,69 @@
         }
     }
 
-    // Event Listeners inside Closed Shadow DOM
-    pillInner.addEventListener("click", (e) => {
-        e.stopPropagation();
-        isDrawerOpen = !isDrawerOpen;
-        if (isDrawerOpen) {
-            if (autoHideTimer) {
-                clearTimeout(autoHideTimer);
-                autoHideTimer = null;
+    // Pointer hover tracking
+    const handlePointerEnter = () => {
+        if (hoverLeaveTimer) {
+            clearTimeout(hoverLeaveTimer);
+            hoverLeaveTimer = null;
+        }
+        isHovered = true;
+        if (autoHideTimer) {
+            clearTimeout(autoHideTimer);
+            autoHideTimer = null;
+        }
+    };
+
+    const handlePointerLeave = () => {
+        if (hoverLeaveTimer) clearTimeout(hoverLeaveTimer);
+        hoverLeaveTimer = setTimeout(() => {
+            hoverLeaveTimer = null;
+            isHovered = false;
+            if (!isDrawerOpen && !isPinned) {
+                const allDone = activeTasks.every((t) => t.status === "completed" || t.status === "error");
+                if (allDone) {
+                    scheduleIdleAutoHide(AUTO_HIDE_DELAY_MS);
+                }
             }
-            drawer.classList.add("open");
-            renderDrawer(activeTasks[selectedTaskIdx] || activeTasks[0]);
-        } else {
-            drawer.classList.remove("open");
-        }
+        }, 800);
+    };
+
+    root.addEventListener("mouseenter", handlePointerEnter);
+    root.addEventListener("mouseleave", handlePointerLeave);
+
+    // Clicking anywhere on the pill toggles drawer
+    pillInner.addEventListener("click", (e) => {
+        if (e.target.closest("button")) return;
+        toggleDrawer();
     });
 
-    prevTabBtn.addEventListener("click", (e) => {
+    detailsBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        if (activeTasks.length > 1) {
-            selectedTaskIdx = (selectedTaskIdx - 1 + activeTasks.length) % activeTasks.length;
-            renderTasks(activeTasks, viewerTabId);
-        }
+        toggleDrawer();
     });
 
-    nextTabBtn.addEventListener("click", (e) => {
+    drawerCloseBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        if (activeTasks.length > 1) {
-            selectedTaskIdx = (selectedTaskIdx + 1) % activeTasks.length;
-            renderTasks(activeTasks, viewerTabId);
-        }
+        toggleDrawer(false);
+    });
+
+    pinBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        setPinnedState(!isPinned);
+    });
+
+    drawerPinBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        setPinnedState(!isPinned);
     });
 
     closeBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        hidePopoverTopLayer();
+        const currentTask = activeTasks[selectedTaskIdx] || activeTasks[0];
+        if (currentTask && currentTask.tabId && typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
+            chrome.runtime.sendMessage({ action: "hud_dismiss", tabId: currentTask.tabId });
+        }
+        forceHidePopoverTopLayer();
     });
 
     rpcTabBtn.addEventListener("click", (e) => {
@@ -1080,19 +2027,43 @@
         renderDrawer(activeTasks[selectedTaskIdx] || activeTasks[0]);
     });
 
+    copySummaryBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const currentTask = activeTasks[selectedTaskIdx] || activeTasks[0];
+        if (!currentTask) return;
+        const lines = [
+            `[OnlyDOMs Task Summary]`,
+            `Tab: #${currentTask.tabId} (${currentTask.tabTitle || "Untitled"})`,
+            `Status: ${currentTask.status}`,
+            `Intent: ${currentTask.intent}`,
+            `Command: ${currentTask.executingCmd}`
+        ];
+        if (Array.isArray(currentTask.logs) && currentTask.logs.length > 0) {
+            lines.push(`\nTelemetry Log (${currentTask.logs.length}):`);
+            currentTask.logs.forEach((l, i) => {
+                lines.push(`  ${i + 1}. [${l.toolName || "tool"}] ${l.intent || l.executingCmd || ""}`);
+            });
+        }
+        if (navigator.clipboard) {
+            navigator.clipboard.writeText(lines.join("\n"));
+            copySummaryBtn.style.color = "#38bdf8";
+            setTimeout(() => { copySummaryBtn.style.removeProperty("color"); }, 1200);
+        }
+    });
+
     killBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         const currentTask = activeTasks[selectedTaskIdx] || activeTasks[0];
         if (currentTask && currentTask.tabId) {
             chrome.runtime.sendMessage({ action: "detach_tab", tabId: currentTask.tabId }, () => {
-                hidePopoverTopLayer();
+                forceHidePopoverTopLayer();
             });
         } else {
-            hidePopoverTopLayer();
+            forceHidePopoverTopLayer();
         }
     });
 
-    // 1. Persistent Port Connection (`mcp-hud-port`) for instant cross-tab hydration
+    // 1. Persistent Port Connection (`mcp-hud-port`)
     function connectHudPort() {
         if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.connect) return;
         try {
@@ -1102,7 +2073,7 @@
                 if (msg.type === "HUD_SYNC") {
                     renderTasks(msg.tasks || [], msg.viewerTabId);
                 } else if (msg.type === "CLOAK_HUD") {
-                    host.style.setProperty("visibility", msg.cloak ? "hidden" : "visible", "important");
+                    setCloakState(msg.cloak !== false);
                 } else if (msg.type === "CLEAR_BANNER") {
                     hidePopoverTopLayer();
                 }
@@ -1115,20 +2086,20 @@
     }
     connectHudPort();
 
-    // 2. Direct Message Listener (CLOAK_HUD, HUD_SYNC, and legacy UPDATE_BANNER / CLEAR_BANNER compatibility)
+    // 2. Direct Message Listener
     if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage) {
         chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             if (!message || typeof message !== "object") return false;
 
             if (message.type === "CLOAK_HUD") {
-                host.style.setProperty("visibility", "hidden", "important");
+                setCloakState(true);
                 requestAnimationFrame(() => {
                     sendResponse({ success: true, cloaked: true });
                 });
                 return true;
             }
             if (message.type === "UNCLOAK_HUD") {
-                host.style.setProperty("visibility", "visible", "important");
+                setCloakState(false);
                 sendResponse({ success: true, cloaked: false });
                 return true;
             }
@@ -1138,12 +2109,11 @@
                 return true;
             }
             if (message.type === "UPDATE_BANNER") {
-                // Upgrade legacy UPDATE_BANNER into a sleek HUD task state with automatic 2500ms idle hide
                 const syntheticTask = {
                     tabId: message.activeTabId || 1,
                     tabTitle: message.activeTabTitle || document.title || "Active Tab",
                     intent: message.intent || `Agent active on Tab #${message.activeTabId || 1}`,
-                    executingCmd: message.executingCmd || `Executing :: browser action on Tab :: #${message.activeTabId || 1} (${message.activeTabTitle || document.title || "Tab"})`,
+                    executingCmd: message.executingCmd || `Executing :: action on Tab #${message.activeTabId || 1}`,
                     status: message.status || "running",
                     updatedAt: Date.now(),
                     logs: [],
@@ -1169,7 +2139,7 @@
                 tabId,
                 tabTitle: title || "Untitled Tab",
                 intent: intent || `Inspecting Tab #${tabId}`,
-                executingCmd: executingCmd || `Executing :: command on Tab :: #${tabId} (${title || "Untitled Tab"})`,
+                executingCmd: executingCmd || `Executing :: command on Tab #${tabId}`,
                 status,
                 updatedAt: Date.now(),
                 logs: [],
@@ -1177,7 +2147,7 @@
             }], viewerTabId);
         },
         hide() {
-            hidePopoverTopLayer();
+            forceHidePopoverTopLayer();
         }
     };
 })();

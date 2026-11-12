@@ -22,6 +22,7 @@ pub async fn execute_browser_pipeline(
     let mut final_url = String::new();
     let mut screenshot = None;
     let mut step_results = Vec::new();
+    let mut last_evaluate_result: Option<String> = None;
 
     for (idx, step) in steps.iter().enumerate() {
         let action = step.get("action").and_then(|v| v.as_str()).unwrap_or("");
@@ -81,32 +82,67 @@ pub async fn execute_browser_pipeline(
                 current_tab = Some(tab_id);
                 step_results.push(serde_json::json!({ "step": idx, "action": "switch_tab", "status": "ok", "result": res }));
             }
-            "wait_for" => {
+            "wait_for" | "wait_selector" => {
                 let selector = step.get("selector").and_then(|v| v.as_str()).unwrap_or("");
                 let timeout_ms = step.get("timeout_ms").and_then(|v| v.as_u64()).unwrap_or(8000);
-                let start = Instant::now();
-                let mut found = false;
 
-                while start.elapsed().as_millis() as u64 <= timeout_ms {
-                    let expr = format!(
-                        "(() => {{ const el = document.querySelector('{}'); if (el && (el.nodeName.toLowerCase() === 'mcp-agent-hud' || el.id === '__mcp_agent_hud_host__')) return false; return !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length)); }})()",
-                        selector.replace('\'', "\\'")
-                    );
-                    if let Ok(val) = send_cdp_command(state.clone(), current_tab, "Runtime.evaluate", serde_json::json!({
-                        "expression": expr,
-                        "returnByValue": true
-                    })).await {
-                        if val.get("result").and_then(|r| r.get("value")).and_then(|v| v.as_bool()).unwrap_or(false) {
-                            found = true;
-                            break;
-                        }
-                    }
-                    tokio::time::sleep(Duration::from_millis(150)).await;
+                let expr = format!(
+                    "(() => {{
+                        return new Promise((resolve) => {{
+                            const isHud = (n) => !n || (n.nodeName || '').toLowerCase() === 'mcp-agent-hud' || n.id === '__mcp_agent_hud_host__' || (n.hasAttribute && n.hasAttribute('data-mcp-internal-ignore'));
+                            const check = () => {{
+                                try {{
+                                    const el = document.querySelector('{}');
+                                    if (el && !isHud(el) && (el.offsetWidth || el.offsetHeight || el.getClientRects().length)) return true;
+                                }} catch (_) {{}}
+                                return false;
+                            }};
+                            if (check()) return resolve(true);
+
+                            let obs = null;
+                            const timer = setTimeout(() => {{
+                                if (obs) obs.disconnect();
+                                resolve(false);
+                            }}, {});
+
+                            try {{
+                                obs = new MutationObserver(() => {{
+                                    if (check()) {{
+                                        clearTimeout(timer);
+                                        obs.disconnect();
+                                        resolve(true);
+                                    }}
+                                }});
+                                const target = document.documentElement || document.body;
+                                if (target) {{
+                                    obs.observe(target, {{ childList: true, subtree: true, attributes: true }});
+                                }} else {{
+                                    clearTimeout(timer);
+                                    resolve(false);
+                                }}
+                            }} catch (_) {{
+                                clearTimeout(timer);
+                                resolve(false);
+                            }}
+                        }});
+                    }})()",
+                    selector.replace('\'', "\\'"),
+                    timeout_ms
+                );
+
+                let mut found = false;
+                if let Ok(val) = send_cdp_command(state.clone(), current_tab, "Runtime.evaluate", serde_json::json!({
+                    "expression": expr,
+                    "returnByValue": true,
+                    "awaitPromise": true
+                })).await {
+                    found = val.get("result").and_then(|r| r.get("value")).and_then(|v| v.as_bool()).unwrap_or(false);
                 }
+
                 if !found && !step.get("optional").and_then(|v| v.as_bool()).unwrap_or(false) {
                     return Err(format!("Timeout waiting for selector: '{}'", selector));
                 }
-                step_results.push(serde_json::json!({ "step": idx, "action": "wait_for", "found": found }));
+                step_results.push(serde_json::json!({ "step": idx, "action": action, "found": found }));
             }
             "wait_condition" => {
                 let expr = step.get("expression").and_then(|v| v.as_str()).unwrap_or("true");
@@ -177,9 +213,9 @@ pub async fn execute_browser_pipeline(
                 let timeout_ms = step.get("timeout_ms").and_then(|v| v.as_u64()).unwrap_or(6000);
                 let wait_after_ms = step.get("wait_after_ms").and_then(|v| v.as_u64()).unwrap_or(250);
                 let start = Instant::now();
-                let mut clicked = false;
+                let mut click_info: Option<Value> = None;
 
-                // Resilient semantic click with wait & retry and HUD exclusion guard
+                // OmniClick Engine: Multi-tier event cascade, React/Angular handler execution & CDP mouse dispatch
                 while start.elapsed().as_millis() as u64 <= timeout_ms {
                     let click_expr = format!(
                         "(() => {{
@@ -217,10 +253,74 @@ pub async fn execute_browser_pipeline(
                                     if (clickable && !isHud(clickable)) el = clickable;
                                 }}
                             }}
-                            if (!el || isHud(el)) return false;
-                            el.scrollIntoView({{ block: 'center', inline: 'center' }});
-                            el.click();
-                            return true;
+                            if (!el || isHud(el)) return null;
+
+                            // 1. Scroll into view
+                            try {{
+                                el.scrollIntoView({{ block: 'center', inline: 'center', behavior: 'instant' }});
+                            }} catch (_) {{}}
+
+                            // 2. Measure center coordinates
+                            const rect = el.getBoundingClientRect();
+                            const x = rect.left + rect.width / 2;
+                            const y = rect.top + rect.height / 2;
+
+                            // 3. Dispatch full Pointer & Mouse Event Cascade (React 17/18 & Angular Zone.js support)
+                            const opts = {{ bubbles: true, cancelable: true, composed: true, view: window }};
+                            try {{
+                                el.dispatchEvent(new PointerEvent('pointerover', opts));
+                                el.dispatchEvent(new MouseEvent('mouseover', opts));
+                                el.dispatchEvent(new PointerEvent('pointerenter', opts));
+                                el.dispatchEvent(new PointerEvent('pointerdown', {{ ...opts, button: 0, buttons: 1, pressure: 0.5 }}));
+                                el.dispatchEvent(new MouseEvent('mousedown', {{ ...opts, button: 0, buttons: 1 }}));
+                            }} catch (_) {{}}
+
+                            if (typeof el.focus === 'function') {{
+                                try {{ el.focus({{ preventScroll: true }}); }} catch (_) {{}}
+                            }}
+
+                            try {{
+                                el.dispatchEvent(new PointerEvent('pointerup', {{ ...opts, button: 0, buttons: 0 }}));
+                                el.dispatchEvent(new MouseEvent('mouseup', {{ ...opts, button: 0, buttons: 0 }}));
+                                el.dispatchEvent(new MouseEvent('click', {{ ...opts, button: 0, detail: 1 }}));
+                                if (typeof el.click === 'function') {{
+                                    el.click();
+                                }}
+                            }} catch (_) {{}}
+
+                            // 4. React Fiber Internal Event Handler Direct Invocation Fallback
+                            let reactTriggered = false;
+                            const triggerReact = (node) => {{
+                                if (!node) return false;
+                                try {{
+                                    const propKey = Object.keys(node).find(k => k.startsWith('__reactProps$') || k.startsWith('__reactEventHandlers$'));
+                                    if (propKey && node[propKey]) {{
+                                        const p = node[propKey];
+                                        const dummyEv = {{ preventDefault: () => {{}}, stopPropagation: () => {{}}, target: node, currentTarget: node }};
+                                        if (typeof p.onClick === 'function') {{
+                                            p.onClick(dummyEv);
+                                            return true;
+                                        }}
+                                        if (typeof p.onPointerDown === 'function') {{
+                                            p.onPointerDown(dummyEv);
+                                            return true;
+                                        }}
+                                    }}
+                                }} catch (_) {{}}
+                                return false;
+                            }};
+                            reactTriggered = triggerReact(el) || triggerReact(el.closest('button, [role=\"button\"], a, div'));
+
+                            const href = (el.tagName === 'A' && el.href) ? el.href : (el.closest('a') ? el.closest('a').href : null);
+
+                            return {{
+                                clicked: true,
+                                x: x > 0 ? x : 10,
+                                y: y > 0 ? y : 10,
+                                tagName: el.tagName || '',
+                                href: href,
+                                reactTriggered: reactTriggered
+                            }};
                         }})()",
                         selector.replace('\'', "\\'"),
                         text.replace('\'', "\\'"),
@@ -230,20 +330,55 @@ pub async fn execute_browser_pipeline(
                         "expression": click_expr,
                         "returnByValue": true
                     })).await {
-                        if val.get("result").and_then(|r| r.get("value")).and_then(|v| v.as_bool()).unwrap_or(false) {
-                            clicked = true;
-                            break;
+                        if let Some(res_val) = val.get("result").and_then(|r| r.get("value")) {
+                            if res_val.as_bool() == Some(true) {
+                                click_info = Some(serde_json::json!({
+                                    "clicked": true,
+                                    "x": 10.0,
+                                    "y": 10.0
+                                }));
+                                break;
+                            } else if res_val.get("clicked").and_then(|v| v.as_bool()) == Some(true) {
+                                click_info = Some(res_val.clone());
+                                break;
+                            }
                         }
                     }
                     tokio::time::sleep(Duration::from_millis(150)).await;
                 }
+
+                let mut clicked = false;
+                if let Some(ref info) = click_info {
+                    clicked = true;
+                    let cx = info.get("x").and_then(|v| v.as_f64()).unwrap_or(10.0);
+                    let cy = info.get("y").and_then(|v| v.as_f64()).unwrap_or(10.0);
+
+                    // Tier 3: Dispatch native OS-level CDP mouse event sequence for isTrusted check
+                    send_cdp_command(state.clone(), current_tab, "Input.dispatchMouseEvent", serde_json::json!({
+                        "type": "mouseMoved", "x": cx, "y": cy
+                    })).await.ok();
+                    send_cdp_command(state.clone(), current_tab, "Input.dispatchMouseEvent", serde_json::json!({
+                        "type": "mousePressed", "x": cx, "y": cy, "button": "left", "clickCount": 1
+                    })).await.ok();
+                    send_cdp_command(state.clone(), current_tab, "Input.dispatchMouseEvent", serde_json::json!({
+                        "type": "mouseReleased", "x": cx, "y": cy, "button": "left", "clickCount": 1
+                    })).await.ok();
+
+                    // Track potential href from clicked link for subsequent steps
+                    if let Some(href_str) = info.get("href").and_then(|h| h.as_str()) {
+                        if !href_str.starts_with("javascript:") {
+                            last_evaluate_result = Some(href_str.to_string());
+                        }
+                    }
+                }
+
                 if !clicked && !step.get("optional").and_then(|v| v.as_bool()).unwrap_or(false) {
                     return Err(format!("Failed to click element (selector: '{}', text: '{}', aria_label: '{}')", selector, text, aria_label));
                 }
                 if wait_after_ms > 0 {
                     tokio::time::sleep(Duration::from_millis(wait_after_ms)).await;
                 }
-                step_results.push(serde_json::json!({ "step": idx, "action": "click", "clicked": clicked }));
+                step_results.push(serde_json::json!({ "step": idx, "action": "click", "clicked": clicked, "details": click_info }));
             }
             "scroll" => {
                 let delta_y = step.get("delta_y").and_then(|v| v.as_i64()).unwrap_or_else(|| {
@@ -312,11 +447,44 @@ pub async fn execute_browser_pipeline(
                 })).await?;
                 let mut val = res.get("result").and_then(|r| r.get("value")).cloned().unwrap_or(Value::Null);
                 crate::tools::debugger::optimize_evaluate_value(&mut val, false);
+
+                // Track string or URL result for subsequent navigate_to_result step
+                if let Some(s) = val.as_str() {
+                    let st = s.trim();
+                    if st.starts_with("http://") || st.starts_with("https://") || st.starts_with('/') {
+                        last_evaluate_result = Some(st.to_string());
+                    }
+                } else if let Some(href) = val.get("href").and_then(|h| h.as_str()) {
+                    last_evaluate_result = Some(href.to_string());
+                } else if let Some(url) = val.get("url").and_then(|u| u.as_str()) {
+                    last_evaluate_result = Some(url.to_string());
+                }
+
                 step_results.push(serde_json::json!({
                     "step": idx,
                     "action": "evaluate",
                     "result": val
                 }));
+            }
+            "navigate_to_result" => {
+                let target_url = step.get("url").and_then(|v| v.as_str())
+                    .or_else(|| last_evaluate_result.as_deref())
+                    .unwrap_or("");
+                if target_url.is_empty() {
+                    return Err("Action 'navigate_to_result' failed: no URL found from previous evaluate step and no 'url' parameter provided.".to_string());
+                }
+                let cdp_res = send_cdp_command(state.clone(), current_tab, "Page.navigate", serde_json::json!({
+                    "url": target_url
+                })).await;
+                if cdp_res.is_err() {
+                    if let Some(tid) = current_tab {
+                        send_hub_command(state.clone(), Some(tid), "NAVIGATE_TAB", "", serde_json::json!({ "tabId": tid, "url": target_url })).await?;
+                    } else {
+                        cdp_res?;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                step_results.push(serde_json::json!({ "step": idx, "action": "navigate_to_result", "url": target_url, "status": "ok" }));
             }
             "press_key" => {
                 let key = step.get("key").and_then(|v| v.as_str()).unwrap_or("Enter");
@@ -354,7 +522,7 @@ pub async fn execute_browser_pipeline(
                 crate::tools::input::fill_inputs(state.clone(), current_tab, serde_json::json!({ "fields": fields })).await?;
                 step_results.push(serde_json::json!({ "step": idx, "action": "fill_inputs", "status": "ok" }));
             }
-            "take_screenshot" => {
+            "take_screenshot" | "screenshot" => {
                 let full_page = step.get("full_page").and_then(|v| v.as_bool()).unwrap_or(false);
                 let format = step.get("format").and_then(|v| v.as_str()).unwrap_or("png");
                 let quality = step.get("quality").and_then(|v| v.as_u64());

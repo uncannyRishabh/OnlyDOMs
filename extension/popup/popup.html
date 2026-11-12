@@ -7,119 +7,136 @@
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <div class="app-container">
-    <!-- Header: Branding & Live Connection Pill -->
+  <div class="app-layout">
+    <!-- Header: Branding & Live Connection Status -->
     <header class="app-header">
       <div class="brand">
-        <span class="brand-icon">⚡</span>
-        <div class="brand-text">
-          <span class="brand-title">OnlyDOMs</span>
-          <span class="brand-subtitle">Browser Control</span>
+        <span class="brand-badge">⚡</span>
+        <div class="brand-meta">
+          <h1 class="brand-title">OnlyDOMs</h1>
+          <span class="brand-tagline">Autonomous Browser Control</span>
         </div>
       </div>
-      <div id="connectionPill" class="status-pill status-disconnected" title="WebSocket status to MCP daemon">
-        <span class="status-dot"></span>
-        <span id="connectionText">Checking...</span>
+      <div id="connectionPill" class="connection-badge status-disconnected" title="Daemon WebSocket Status">
+        <span class="ping-dot"></span>
+        <span id="connectionText" class="connection-label">Checking...</span>
       </div>
     </header>
 
-    <!-- Active Agent Sessions Leases Card -->
-    <section class="card" id="sessionsCard">
-      <div class="card-header">
-        <div class="card-title-group">
-          <span class="card-icon">🤖</span>
-          <h2 class="card-title">Active Agent Sessions</h2>
-          <span id="sessionCountBadge" class="badge">0</span>
+    <main class="app-main">
+      <!-- Active Agent Sessions Section -->
+      <section class="panel" id="sessionsCard" aria-labelledby="sessionsTitle">
+        <div class="panel-header">
+          <div class="panel-heading">
+            <span class="panel-icon" aria-hidden="true">🤖</span>
+            <h2 id="sessionsTitle" class="panel-title">Active Agent Leases</h2>
+            <span id="sessionCountBadge" class="counter-badge">0 active</span>
+          </div>
+          <button id="emergencyDetachBtn" class="btn btn-danger btn-xs" disabled title="Instantly revoke debugger access and detach all agents">
+            🚨 Detach All
+          </button>
         </div>
-        <button id="emergencyDetachBtn" class="btn btn-danger btn-sm" disabled title="Instantly detach all agent sessions and revoke debugger access">
-          🚨 Detach All
-        </button>
-      </div>
 
-      <div id="sessionsList" class="sessions-list">
-        <div class="empty-state">
-          No active agent sessions. Agents lease tabs dynamically on demand.
+        <div id="sessionsList" class="sessions-stream" role="region" aria-live="polite">
+          <div class="empty-state">
+            <span class="empty-icon" aria-hidden="true">🍃</span>
+            <p class="empty-title">No Active Leases</p>
+            <p class="empty-desc">Agents lease tabs dynamically on demand when executing browser tools.</p>
+          </div>
         </div>
-      </div>
-    </section>
+      </section>
 
-    <!-- Site Blacklist Manager Card (R5 / Features F7, F8) -->
-    <section class="card" id="blacklistCard">
-      <div class="card-header">
-        <div class="card-title-group">
-          <span class="card-icon">🛡️</span>
-          <h2 class="card-title">Site Blacklist</h2>
-          <span id="blockedCountBadge" class="badge">0</span>
+      <!-- Site Blacklist Policy Section -->
+      <section class="panel" id="blacklistCard" aria-labelledby="blacklistTitle">
+        <div class="panel-header">
+          <div class="panel-heading">
+            <span class="panel-icon" aria-hidden="true">🛡️</span>
+            <h2 id="blacklistTitle" class="panel-title">Site Policy Blacklist</h2>
+            <span id="blockedCountBadge" class="counter-badge">0 blocked</span>
+          </div>
+          <button id="clearAllBtn" class="btn btn-ghost btn-xs" style="display: none;" title="Clear all blocked URL patterns">
+            Clear All
+          </button>
         </div>
-        <button id="clearAllBtn" class="btn btn-ghost btn-sm" style="display: none;" title="Remove all blocked patterns">
-          Clear All
-        </button>
-      </div>
 
-      <p class="card-description">
-        Blocked domains &amp; URL patterns agents are strictly prohibited from interacting with or navigating to.
-      </p>
+        <p class="panel-description">
+          Restricted domains &amp; URL patterns agents are strictly prohibited from inspecting or interacting with.
+        </p>
 
-      <!-- Add Pattern Input Form -->
-      <form id="addPatternForm" class="input-group">
-        <input 
-          type="text" 
-          id="patternInput" 
-          class="form-control" 
-          placeholder="e.g. *.bank.com, facebook.com" 
-          autocomplete="off" 
-          spellcheck="false"
-          aria-label="Domain or URL pattern to block"
-        />
-        <button type="submit" id="addPatternBtn" class="btn btn-primary">
-          Add
-        </button>
-      </form>
-      <div id="inputError" class="input-error" style="display: none;"></div>
+        <!-- Pattern Add Input Form -->
+        <form id="addPatternForm" class="add-pattern-form">
+          <div class="input-shell">
+            <span class="input-prefix-icon" aria-hidden="true">🚫</span>
+            <input 
+              type="text" 
+              id="patternInput" 
+              class="pattern-field" 
+              placeholder="e.g. *.bank.com, facebook.com" 
+              autocomplete="off" 
+              spellcheck="false"
+              aria-label="Domain or URL pattern to block"
+            />
+          </div>
+          <button type="submit" id="addPatternBtn" class="btn btn-primary">
+            Block
+          </button>
+        </form>
+        <div id="inputError" class="validation-message" style="display: none;" role="alert"></div>
 
-      <!-- Quick Syntax Hints -->
-      <div class="pattern-hints">
-        <span class="hint-tag">Exact: <code>domain.com</code></span>
-        <span class="hint-tag">Wildcard: <code>*.bank.com</code></span>
-        <span class="hint-tag">Prefix: <code>https://corp/</code></span>
-      </div>
+        <!-- Interactive Syntax Chips -->
+        <div class="syntax-chips-row" aria-label="Quick syntax templates">
+          <button type="button" class="syntax-chip" data-template="*.example.com" title="Click to fill wildcard pattern">
+            Wildcard: <code>*.bank.com</code>
+          </button>
+          <button type="button" class="syntax-chip" data-template="facebook.com" title="Click to fill exact domain">
+            Exact: <code>domain.com</code>
+          </button>
+          <button type="button" class="syntax-chip" data-template="https://corp.internal/" title="Click to fill URL prefix">
+            Prefix: <code>https://corp/</code>
+          </button>
+        </div>
 
-      <!-- Blacklist Items Scrollable List -->
-      <div id="blacklistContainer" class="blacklist-container">
-        <!-- Rendered dynamically -->
-      </div>
-    </section>
+        <!-- Blacklist List -->
+        <div id="blacklistContainer" class="blacklist-stream" role="region" aria-live="polite">
+          <!-- Populated dynamically -->
+        </div>
+      </section>
+    </main>
 
-    <!-- Footer: Port Status & Power-User Controls -->
+    <!-- Footer: Port Hub & Power-User Settings -->
     <footer class="app-footer">
-      <div class="footer-bar">
-        <span class="port-info">
-          Daemon Hub: <strong id="activePortNumber">Port 9222</strong>
-        </span>
-        <button id="toggleSettingsBtn" class="link-btn" type="button" aria-expanded="false">
-          ⚙️ Settings
+      <div class="footer-status-row">
+        <div class="daemon-info">
+          <span class="daemon-label">Daemon Relay:</span>
+          <code id="activePortNumber" class="daemon-port">Port 9222</code>
+        </div>
+        <button id="toggleSettingsBtn" class="settings-toggle-btn" type="button" aria-expanded="false" aria-controls="settingsDrawer">
+          <span>⚙️ Port Config</span>
+          <span class="chevron-arrow">▾</span>
         </button>
       </div>
 
-      <!-- Expandable Port Override Drawer -->
+      <!-- Settings Disclosure Drawer -->
       <div id="settingsDrawer" class="settings-drawer" style="display: none;">
-        <div class="drawer-row">
-          <label for="customPortInput" class="drawer-label">Override Port:</label>
-          <input 
-            type="number" 
-            id="customPortInput" 
-            class="form-control form-control-sm" 
-            placeholder="9222" 
-            min="1024" 
-            max="65535" 
-          />
-          <button id="savePortBtn" class="btn btn-secondary btn-sm" type="button">Connect</button>
+        <div class="settings-drawer-inner">
+          <label for="customPortInput" class="settings-field-label">Custom Relay Port:</label>
+          <div class="settings-input-group">
+            <input 
+              type="number" 
+              id="customPortInput" 
+              class="settings-port-field" 
+              placeholder="9222" 
+              min="1024" 
+              max="65535" 
+            />
+            <button id="savePortBtn" class="btn btn-secondary btn-sm" type="button">Connect</button>
+          </div>
+          <div class="settings-tip">Automated candidate scan: 9222, 9922, 9223, 9923, 9224, 9924</div>
         </div>
-        <div class="drawer-hint">Default scan: 9222, 9922, 9223, 9923, 9224, 9924</div>
       </div>
 
-      <!-- Floating Notification Toast -->
-      <div id="statusToast" class="toast" style="display: none;" role="status"></div>
+      <!-- Floating Feedback Toast -->
+      <div id="statusToast" class="feedback-toast" style="display: none;" role="status"></div>
     </footer>
   </div>
 

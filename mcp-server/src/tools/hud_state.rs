@@ -21,6 +21,10 @@ pub struct RpcTelemetryEntry {
     pub status: String,
     pub latency_ms: Option<u64>,
     pub timestamp: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_data: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_data: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -192,7 +196,7 @@ pub fn describe_pipeline_step(step: &Value) -> String {
             .and_then(|v| v.as_str())
             .map(|u| truncate_chars(u, 40))
             .unwrap_or_else(|| "url".to_string()),
-        "click" | "wait_for" | "scroll" => {
+        "click" | "wait_for" | "wait_selector" | "scroll" => {
             if let Some(sel) = step.get("selector").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
                 truncate_chars(sel, 36)
             } else if let Some(txt) = step.get("text").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
@@ -205,6 +209,16 @@ pub fn describe_pipeline_step(step: &Value) -> String {
                 "target".to_string()
             }
         }
+        "navigate_to_result" => step
+            .get("url")
+            .and_then(|v| v.as_str())
+            .map(|u| truncate_chars(u, 40))
+            .unwrap_or_else(|| "result_url".to_string()),
+        "take_screenshot" | "screenshot" => step
+            .get("save_path")
+            .and_then(|v| v.as_str())
+            .map(|p| truncate_chars(p, 36))
+            .unwrap_or_else(|| "viewport".to_string()),
         "fill_inputs" => {
             let count = step
                 .get("fields")
@@ -247,12 +261,6 @@ pub fn describe_pipeline_step(step: &Value) -> String {
 }
 
 /// Records and broadcasts a `HUD_STATE_UPDATE` frame to `background.js`.
-///
-/// To preserve 100% compatibility with legacy mock tests that inspect `lock.tx` without setting
-/// `conn_token` or `_intent`, wire transmission over `lock.tx` occurs when:
-/// - `lock.conn_token > 0` (an active WebSocket connection is established), OR
-/// - `force_wire_send` is true (e.g., when `_intent` is explicitly supplied in tool arguments).
-/// In all cases, the state and broadcast history in `HubState` are updated synchronously.
 pub async fn broadcast_hud_state(
     state: SharedHub,
     tab_id: u64,
@@ -263,6 +271,38 @@ pub async fn broadcast_hud_state(
     rpc_id: Option<&str>,
     tool_name: Option<&str>,
     latency_ms: Option<u64>,
+    force_wire_send: bool,
+) -> Value {
+    broadcast_hud_state_full(
+        state,
+        tab_id,
+        tab_title,
+        intent,
+        cmd_descriptor,
+        status,
+        rpc_id,
+        tool_name,
+        latency_ms,
+        None,
+        None,
+        force_wire_send,
+    )
+    .await
+}
+
+/// Enriched broadcast including structured agent request arguments and browser response payload.
+pub async fn broadcast_hud_state_full(
+    state: SharedHub,
+    tab_id: u64,
+    tab_title: Option<&str>,
+    intent: &str,
+    cmd_descriptor: &str,
+    status: &str,
+    rpc_id: Option<&str>,
+    tool_name: Option<&str>,
+    latency_ms: Option<u64>,
+    request_data: Option<serde_json::Value>,
+    response_data: Option<serde_json::Value>,
     force_wire_send: bool,
 ) -> Value {
     let bounded_intent = truncate_chars(intent.trim(), MAX_INTENT_CHARS);
@@ -300,18 +340,36 @@ pub async fn broadcast_hud_state(
             status: status.to_string(),
             latency_ms,
             timestamp: now_ms,
+            request_data: request_data.clone(),
+            response_data: response_data.clone(),
         });
-        lock.network_harvester.record_agent_step(tab_id, rid, now_ms);
+        lock.network_harvester.record_agent_step_with_meta(
+            tab_id,
+            rid,
+            tool_name,
+            Some(&bounded_intent),
+            now_ms,
+        );
     }
 
-    let frame = serde_json::json!({
+    let mut frame = serde_json::json!({
         "type": "HUD_STATE_UPDATE",
         "tab_id": tab_id,
         "intent": bounded_intent,
         "executing_cmd": executing_cmd,
         "status": status,
-        "updated_at": now_ms
+        "updated_at": now_ms,
+        "rpc_id": rpc_id,
+        "tool_name": tool_name.unwrap_or("mcp_tool"),
+        "latency_ms": latency_ms
     });
+
+    if let Some(ref req) = request_data {
+        frame["request_data"] = req.clone();
+    }
+    if let Some(ref resp) = response_data {
+        frame["response_data"] = resp.clone();
+    }
 
     if lock.hud_broadcast_log.len() >= MAX_HUD_BROADCAST_HISTORY {
         lock.hud_broadcast_log.pop_front();
@@ -376,6 +434,8 @@ mod tests {
                 status: "running".to_string(),
                 latency_ms: Some(12),
                 timestamp: 1000 + i,
+                request_data: None,
+                response_data: None,
             });
         }
         assert_eq!(state.logs.len(), MAX_RPC_LOGS_PER_TAB);

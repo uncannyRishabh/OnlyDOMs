@@ -137,6 +137,16 @@ async fn setup_mock_extension_hub() -> (
                                 }
                             }
                         })
+                    } else if expr.contains("example.com/profile") {
+                        json!({
+                            "id": id,
+                            "result": {
+                                "result": {
+                                    "type": "string",
+                                    "value": "https://example.com/profile"
+                                }
+                            }
+                        })
                     } else if expr.contains("outerHTML") {
                         json!({
                             "id": id,
@@ -606,5 +616,52 @@ async fn test_blindspot_p9_click_and_visual_report_pipeline_e2e() {
 
     let _ = tokio::fs::remove_dir_all(&temp_reports_root).await;
     std::env::remove_var("ONLYDOMS_REPORTS_DIR");
+    mock_handle.abort();
+}
+
+#[tokio::test]
+async fn test_pipeline_batching_aliases_and_omniclick() {
+    let (state, _hud_frames, mock_handle) = setup_mock_extension_hub().await;
+
+    {
+        let mut lock = state.lock().await;
+        lock.tab_registry.acquire_tab("agent_tester", 88).unwrap();
+    }
+
+    let req = McpRequest {
+        jsonrpc: "2.0".to_string(),
+        id: Some(json!("rpc-batch-test")),
+        method: "tools/call".to_string(),
+        params: Some(json!({
+            "name": "execute_browser_pipeline",
+            "arguments": {
+                "tab_id": 88,
+                "steps": [
+                    { "action": "navigate", "url": "https://example.com" },
+                    { "action": "wait_selector", "selector": "#content", "timeout_ms": 2000 },
+                    { "action": "evaluate", "expression": "'https://example.com/profile'" },
+                    { "action": "navigate_to_result" },
+                    { "action": "screenshot" }
+                ]
+            }
+        })),
+    };
+
+    let resp = handle_mcp_request("agent_tester", req, state.clone()).await.unwrap();
+    assert!(resp.error.is_none(), "Response error was: {:?}", resp.error);
+    let result = resp.result.unwrap();
+    let text = result["content"][0]["text"].as_str().unwrap();
+    let parsed: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["success"], true);
+
+    let steps = parsed["steps_executed"].as_array().unwrap();
+    assert_eq!(steps.len(), 5);
+    assert_eq!(steps[0]["action"], "navigate");
+    assert_eq!(steps[1]["action"], "wait_selector");
+    assert_eq!(steps[2]["action"], "evaluate");
+    assert_eq!(steps[3]["action"], "navigate_to_result");
+    assert_eq!(steps[3]["url"], "https://example.com/profile");
+    assert_eq!(steps[4]["action"], "take_screenshot");
+
     mock_handle.abort();
 }

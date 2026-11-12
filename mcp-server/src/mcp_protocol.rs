@@ -4,7 +4,7 @@ use std::time::Instant;
 use crate::websocket_hub::SharedHub;
 use crate::tools;
 use crate::tools::hud_state::{
-    broadcast_hud_state, describe_tool_cmd, normalize_intent_preview,
+    broadcast_hud_state, broadcast_hud_state_full, describe_tool_cmd, normalize_intent_preview,
 };
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -392,6 +392,21 @@ pub fn get_tools_list() -> Value {
                 }
             },
             {
+                "name": "get_network_traffic",
+                "description": "Query captured HTTP/XHR/Fetch network traffic correlated to agent actions and cURL commands. Returns full request and response details (method, URL, headers, post data, status code, response headers, response body, triggering action/intent, and cURL command).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "_intent": intent_prop.clone(),
+                        "tab_id": { "type": "number", "description": "Optional tab ID (defaults to agent's assigned tab)" },
+                        "action_id": { "type": "string", "description": "Optional filter by triggering agent step/RPC ID (e.g. 'pipeline_step_1')" },
+                        "rpc_id": { "type": "string", "description": "Alias for action_id" },
+                        "request_id": { "type": "string", "description": "Optional filter for a specific network request ID" },
+                        "url_filter": { "type": "string", "description": "Optional substring filter on URL" }
+                    }
+                }
+            },
+            {
                 "name": "add_breakpoint",
                 "description": "Add a debugger breakpoint",
                 "inputSchema": {
@@ -582,12 +597,18 @@ pub async fn handle_mcp_request(
                 "name": "OnlyDOMs",
                 "version": "1.0.0"
             },
-            "instructions": "⚠️ USER DISCRETIONARY WARNING: This agent possesses capabilities to actively inspect, navigate, execute arbitrary JavaScript, manipulate the DOM, and control your active browser session. OnlyDOMs automatically isolates agent tabs so concurrent agents work safely in separate tabs without collisions."
+            "instructions": "⚠️ ONLYDOMS MCP AGENT DIRECTIVES:\n\
+1. PROTOCOL CONSISTENCY (MCP-FIRST): Always use call_mcp_tool for all browser automation actions (execute_browser_pipeline, evaluate_expression, take_screenshot, create_tab, close_tab). NEVER mix shell CLI commands (onlydoms eval, onlydoms click) on active tabs; tab locks are exclusive per agent session and CLI will fail.\n\
+2. PIPELINE COMPOUND BATCHING: Target 1-2 compound turns. Dispatch multi-step workflows in execute_browser_pipeline with steps: navigate, wait_for/wait_selector, click (OmniClick with React/Angular support), evaluate, navigate_to_result, take_screenshot/screenshot, print_to_pdf.\n\
+3. ASYNC DOM PREDICATES: Never run shell sleep polling. In evaluate_expression, use `await new Promise(...)` with MutationObserver for instant resolution.\n\
+4. SUBAGENT ISOLATION: For deep, open-ended trial-and-error exploratory crawls, delegate to a research subagent via invoke_subagent to keep parent context clean.\n\
+5. ZERO SCHEMA MICRO-READS: Do NOT read individual tool .json schema files. Use the full parameter signatures documented in SKILL.md."
         })),
         "tools/list" => Ok(get_tools_list()),
         "tools/call" => {
             let name = req.params.as_ref().and_then(|p| p.get("name")).and_then(|n| n.as_str()).unwrap_or("");
             let args = req.params.as_ref().and_then(|p| p.get("arguments")).cloned().unwrap_or(serde_json::json!({}));
+            let args_snapshot = args.clone();
 
             let parse_u64 = |val: Option<&Value>| -> Option<u64> {
                 val.and_then(|v| {
@@ -724,10 +745,12 @@ pub async fn handle_mcp_request(
                 }
                 "replay_curl" => {
                     let requested_tab = parse_u64(args.get("tab_id")).or_else(|| parse_u64(args.get("tabId")));
-                    let hud_tid = requested_tab.unwrap_or(1);
-                    broadcast_hud_state(
+                    let target_tab = resolve_or_allocate_tab(state.clone(), client_id, requested_tab)
+                        .await
+                        .unwrap_or_else(|_| requested_tab.unwrap_or(1));
+                    broadcast_hud_state_full(
                         state.clone(),
-                        hud_tid,
+                        target_tab,
                         None,
                         &normalized_intent,
                         &cmd_desc,
@@ -735,22 +758,70 @@ pub async fn handle_mcp_request(
                         Some(&rpc_id_str),
                         Some(name),
                         None,
+                        Some(args_snapshot.clone()),
+                        None,
                         has_explicit_intent,
                     )
                     .await;
-                    let res = tools::curl_runner::replay_curl(state.clone(), requested_tab, args).await;
+                    let res = tools::curl_runner::replay_curl(state.clone(), Some(target_tab), args).await;
                     let elapsed = call_start.elapsed().as_millis() as u64;
                     let final_status = if res.is_ok() { "completed" } else { "error" };
-                    broadcast_hud_state(
+                    broadcast_hud_state_full(
                         state.clone(),
-                        hud_tid,
+                        target_tab,
                         None,
                         &normalized_intent,
                         &cmd_desc,
                         final_status,
-                        None,
+                        Some(&rpc_id_str),
                         Some(name),
                         Some(elapsed),
+                        Some(args_snapshot),
+                        res.as_ref().ok().cloned(),
+                        false,
+                    )
+                    .await;
+                    res
+                }
+                "get_network_traffic" => {
+                    let requested_tab = parse_u64(args.get("tab_id")).or_else(|| parse_u64(args.get("tabId")));
+                    let target_tab = resolve_or_allocate_tab(state.clone(), client_id, requested_tab)
+                        .await
+                        .unwrap_or_else(|_| requested_tab.unwrap_or(1));
+                    broadcast_hud_state_full(
+                        state.clone(),
+                        target_tab,
+                        None,
+                        &normalized_intent,
+                        &cmd_desc,
+                        "running",
+                        Some(&rpc_id_str),
+                        Some(name),
+                        None,
+                        Some(args_snapshot.clone()),
+                        None,
+                        has_explicit_intent,
+                    )
+                    .await;
+                    let mut list_args = args.clone();
+                    if let serde_json::Value::Object(ref mut map) = list_args {
+                        map.insert("action".to_string(), serde_json::Value::String("list".to_string()));
+                    }
+                    let res = tools::curl_runner::replay_curl(state.clone(), Some(target_tab), list_args).await;
+                    let elapsed = call_start.elapsed().as_millis() as u64;
+                    let final_status = if res.is_ok() { "completed" } else { "error" };
+                    broadcast_hud_state_full(
+                        state.clone(),
+                        target_tab,
+                        None,
+                        &normalized_intent,
+                        &cmd_desc,
+                        final_status,
+                        Some(&rpc_id_str),
+                        Some(name),
+                        Some(elapsed),
+                        Some(args_snapshot),
+                        res.as_ref().ok().cloned(),
                         false,
                     )
                     .await;
@@ -838,16 +909,18 @@ pub async fn handle_mcp_request(
 
                             let elapsed = call_start.elapsed().as_millis() as u64;
                             let final_status = if tool_res.is_ok() { "completed" } else { "error" };
-                            broadcast_hud_state(
+                            broadcast_hud_state_full(
                                 state.clone(),
                                 target_tab,
                                 tab_title.as_deref(),
                                 &normalized_intent,
                                 &cmd_desc,
                                 final_status,
-                                None,
+                                Some(&rpc_id_str),
                                 Some(name),
                                 Some(elapsed),
+                                Some(args_snapshot),
+                                tool_res.as_ref().ok().cloned(),
                                 false,
                             )
                             .await;

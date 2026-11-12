@@ -667,7 +667,8 @@ function connect(overridePort) {
                     });
                     await chrome.scripting.executeScript({
                         target: { tabId: targetTabId },
-                        files: [data.file]
+                        files: [data.file],
+                        world: "MAIN"
                     });
                     ws.send(JSON.stringify({ id: data.id, result: { success: true } }));
                 } catch (e) {
